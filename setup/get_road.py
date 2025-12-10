@@ -1,7 +1,15 @@
 import os
 import glob
-import gdown
 import zipfile
+import sys
+import subprocess
+
+def run(cmd):
+    print("+", " ".join(cmd))
+    subprocess.run(cmd, check=True)
+
+run([sys.executable, "-m", "pip", "install", "gdown"])
+import gdown
 
 road_root = os.path.dirname('.\\data\\road\\')
 
