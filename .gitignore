@@ -1,0 +1,6 @@
+data/road/
+data/road_waymo/
+data/hdd/
+
+weights/backbones/*
+!weights/backbones/models.yaml

@@ -7,7 +7,7 @@ Consider using `conda` or `Docker` to isolate your other projects or application
 1. Install the proper `PyTorch` wheel for your hardware:
     - [CUDA / CPU](https://pytorch.org/get-started/locally/)
     - [XPU](https://docs.pytorch.org/docs/stable/notes/get_start_xpu.html)
-2. ~~Run `pip install -r requirements.txt` to install basic requirements~~
+2. Run `pip install -r requirements.txt` to install basic requirements
 3. Run `python setup/get_mmaction2.py` to install [`MMAction2`](https://github.com/open-mmlab/mmaction2)
 4. *(optional)* Download `ROAD_Waymo` from [here](https://console.cloud.google.com/storage/browser/waymo_open_dataset_road_plus_plus)
     - Download `videos` and `road_waymo_trainval_v1.0.json` with [gsutil](https://docs.cloud.google.com/storage/docs/gsutil_install), and place these files in `./data/road_waymo`
