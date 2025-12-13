@@ -9,7 +9,7 @@ import shutil
 
 # TODO: add more OAD backbones to `models.yaml`
 
-def _download_reference(reference: str, name: str, retries=3):
+def _download_reference(reference: str, name: str, retries=3, retry_sec=15):
     # It sometimes just doesn't work because of certificates.
     # However there is no other "official" way so probably MMAction2 is just limited.
     # Once backbone is downloaded, `mim` wouldn't be triggered anymore.
@@ -27,8 +27,8 @@ def _download_reference(reference: str, name: str, retries=3):
         except subprocess.CalledProcessError:
             if i == retries - 1:
                 raise
-            print(f'Retries left: {retries}')
-            time.sleep(5)
+            print(f'Retry: {i+1}/{retries} in {retry_sec}s')
+            time.sleep(retry_sec)
 
 def load_by_key(key: str):
     backbones_root = Path('weights/backbones/')
@@ -56,6 +56,3 @@ def load_by_key(key: str):
         return config, weights
     else:
         raise FileNotFoundError(f"There is something wrong with `{backbone_dir}`")
-
-x, y = load_by_key('tsn-kinetics-400')
-print(f"{x}, {y}")
