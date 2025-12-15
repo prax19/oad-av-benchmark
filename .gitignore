@@ -4,3 +4,6 @@ data/hdd/
 
 weights/backbones/*
 !weights/backbones/models.yaml
+
+# A `sandbox` module. You can test your scripts there.
+sandbox/
