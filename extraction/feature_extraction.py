@@ -43,11 +43,41 @@ def extract_dataset_features(
         extractor = extractors.Extractor_2D(transforms=transforms)
     elif model_type == 'Recognizer3D':
         transforms = extractors.Extractor_3D.compose_transforms(mean=mean, std=std)
-        extractor = extractors.Extractor_3D(transforms=transforms, clip_len=16, frame_interval=4)
+        extractor = extractors.Extractor_3D(transforms=transforms)
     else:
         raise(NotImplementedError(f'{model_type} model type not supported.'))
 
     # full dataset pass
+    # vids = sorted(Path(dataset_root, "videos").glob("*.mp4"))
+    # for vid in tqdm(vids, desc='Processing dataset', leave=False):
+    #     feat_path = Path(out_dir, f"{vid.stem}.npz")
+    #     if feat_path.exists():
+    #         continue
+
+    #     vid_cap = cv2.VideoCapture(vid)
+    #     fps = float(vid_cap.get(cv2.CAP_PROP_FPS))
+    #     total_frames = int(vid_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    #     frame_ids = extractor.sample_timestamp_frames(fps=fps, total_frames=total_frames, sample_hz=sample_hz)
+    #     frames = extractor.preprocess_video_frames(video_capture=vid_cap, timestamp_frames=frame_ids)
+    #     feats = extractor.extract_timestamp_features(model, frames, micro=4)
+    #     vid_cap.release()
+
+    #     del frames, vid_cap
+    #     gc.collect()
+
+    #     np.savez(
+    #         feat_path,
+    #         x=feats.numpy().astype(np.float32),
+    #         frame_ids=frame_ids.astype(np.int64),
+    #         fps=float(fps),
+    #         hz=float(sample_hz),
+    #         total_frames=int(total_frames),
+    #     )
+
+    #     del feats, frame_ids
+    #     gc.collect()
+
     vids = sorted(Path(dataset_root, "videos").glob("*.mp4"))
     for vid in tqdm(vids, desc='Processing dataset', leave=False):
         feat_path = Path(out_dir, f"{vid.stem}.npz")
@@ -58,24 +88,22 @@ def extract_dataset_features(
         fps = float(vid_cap.get(cv2.CAP_PROP_FPS))
         total_frames = int(vid_cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-        frame_ids = extractor.sample_timestamp_frames(fps=fps, total_frames=total_frames, sample_hz=sample_hz)
-        frames = extractor.preprocess_video_frames(video_capture=vid_cap, timestamp_frames=frame_ids)
-        feats = extractor.extract_timestamp_features(model, frames, micro=4)
-        vid_cap.release()
+        timestamp_frames = extractor.sample_timestamp_frames(fps=fps, total_frames=total_frames, sample_hz=sample_hz)
+        feats, _ = extractor.extract_video_features(
+            model,
+            video_capture=vid_cap,
+            timestamp_frames=timestamp_frames
+        )
 
-        del frames, vid_cap
-        gc.collect()
+        vid_cap.release()
 
         np.savez(
             feat_path,
             x=feats.numpy().astype(np.float32),
-            frame_ids=frame_ids.astype(np.int64),
+            frame_ids=timestamp_frames.astype(np.int64),
             fps=float(fps),
             hz=float(sample_hz),
             total_frames=int(total_frames),
         )
-        
-        del feats, frame_ids
-        gc.collect()
 
-extract_dataset_features(backbone='slowfast-kinetics-400')
+extract_dataset_features(backbone='tsn-kinetics-400')
