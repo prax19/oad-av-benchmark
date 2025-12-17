@@ -43,7 +43,7 @@ def extract_dataset_features(
         extractor = extractors.Extractor_2D(transforms=transforms)
     elif model_type == 'Recognizer3D':
         transforms = extractors.Extractor_3D.compose_transforms(mean=mean, std=std)
-        extractor = extractors.Extractor_3D(transforms=transforms)
+        extractor = extractors.Extractor_3D(transforms=transforms, clip_len=16, frame_interval=4)
     else:
         raise(NotImplementedError(f'{model_type} model type not supported.'))
 
@@ -60,10 +60,10 @@ def extract_dataset_features(
 
         frame_ids = extractor.sample_timestamp_frames(fps=fps, total_frames=total_frames, sample_hz=sample_hz)
         frames = extractor.preprocess_video_frames(video_capture=vid_cap, timestamp_frames=frame_ids)
+        feats = extractor.extract_timestamp_features(model, frames, micro=4)
         vid_cap.release()
-        
-        feats = extractor.extract_timestamp_features(model, frames, micro=64)
-        del frames
+
+        del frames, vid_cap
         gc.collect()
 
         np.savez(
@@ -74,8 +74,8 @@ def extract_dataset_features(
             hz=float(sample_hz),
             total_frames=int(total_frames),
         )
+        
         del feats, frame_ids
-
         gc.collect()
 
-extract_dataset_features()
+extract_dataset_features(backbone='slowfast-kinetics-400')

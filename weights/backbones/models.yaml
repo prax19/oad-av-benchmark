@@ -5,9 +5,7 @@ backbones:
     reference: tsn_imagenet-pretrained-r101_8xb32-1x1x8-100e_kinetics400-rgb
     model: tsn
     pretrained: kinetics-400
-    type: rgb
   slowfast-kinetics-400:  
     reference: slowfast_r101-r50_32xb8-4x16x1-256e_kinetics400-rgb
     model: slowfast
     pretrained: kinetics-400
-    type: rgb
