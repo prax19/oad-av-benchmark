@@ -4,8 +4,6 @@ import gc
 
 import cv2
 import numpy as np
-import torch
-from torchvision.transforms import v2 as T
 
 from mmengine import Config
 from mmaction.apis import init_recognizer
@@ -13,77 +11,9 @@ from mmaction.apis import init_recognizer
 
 from weights import load_by_key
 from utils.torch_scripts import get_device
+from extraction import extractors
 
-def sample_frame_ids(fps: float, total_frames: int, sample_hz: float):
-    duration = (total_frames - 1) / max(fps, 1e-6)
-    step = 1.0 / sample_hz
-    times = np.arange(0.0, duration + 1e-9, step)
-    ids = np.rint(times * fps).astype(np.int64)
-    ids = np.clip(ids, 0, total_frames - 1)
-    ids = np.unique(ids)
-    return ids
-
-def read_frames_by_index(video_path: Path, frame_ids: np.ndarray, transforms):
-    frame_ids = np.asarray(frame_ids, dtype=np.int64)
-    if frame_ids.size == 0:
-        return []
-
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise RuntimeError(f"Could not open video: {video_path}")
-
-    frames = []
-    cur = 0
-
-    for want in tqdm(frame_ids, desc="Preprocessing video", leave=False):
-        want = int(want)
-        if want < cur:
-            cap.release()
-            raise RuntimeError("frame_ids must be sorted increasing")
-
-        # fast skipping
-        while cur < want:
-            if not cap.grab():
-                cap.release()
-                raise RuntimeError(f"Failed grab at frame {cur} for {video_path}")
-            cur += 1
-
-        # decode valid frames
-        ok, frame = cap.read()
-        if not ok:
-            cap.release()
-            raise RuntimeError(f"Failed read at frame {want} for {video_path}")
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        frames.append(transforms(frame))
-        cur += 1
-
-    cap.release()
-    return torch.stack(frames, dim=0)
-
-@torch.no_grad()
-def extract_2d_features(model, x_tchw: torch.Tensor, micro=64):
-    device = next(model.parameters()).device
-    feats = []
-
-    for s in tqdm(range(0, x_tchw.shape[0], micro), desc='Extracting features', leave=False):
-        inp = x_tchw[s:s+micro].to(device, non_blocking=True)
-
-        out = model.backbone(inp)
-
-        if hasattr(model, "neck") and model.neck is not None:
-            out = model.neck(out)
-
-        # global avg pool -> [B,C]
-        if out.ndim == 4:
-            out = out.mean(dim=(2, 3))
-        elif out.ndim != 2:
-            raise RuntimeError(f"Unexpected backbone output shape: {tuple(out.shape)}")
-
-        feats.append(out.detach().cpu())
-
-    return torch.cat(feats, dim=0)
-
-def extract_features(
+def extract_dataset_features(
     backbone = "tsn-kinetics-400",
     dataset_root = Path("data/road"),
     device = get_device(),
@@ -104,13 +34,18 @@ def extract_features(
     mean = [m/255.0 for m in dp.mean] if max(dp.mean) > 1 else list(dp.mean)
     std  = [s/255.0 for s in dp.std]  if max(dp.std)  > 1 else list(dp.std)
 
-    transforms = T.Compose([
-        T.ToImage(),
-        T.ToDtype(torch.float32, scale=True),
-        T.Resize(256, antialias=True),
-        T.CenterCrop(224),
-        T.Normalize(mean=mean, std=std),
-    ])
+    # preparing extraction config
+    model_type = cfg.model.type
+
+    extractor: extractors.Extractor = None
+    if model_type == 'Recognizer2D':
+        transforms = extractors.Extractor_2D.compose_transforms(mean=mean, std=std)
+        extractor = extractors.Extractor_2D(transforms=transforms)
+    elif model_type == 'Recognizer3D':
+        transforms = extractors.Extractor_3D.compose_transforms(mean=mean, std=std)
+        extractor = extractors.Extractor_3D(transforms=transforms)
+    else:
+        raise(NotImplementedError(f'{model_type} model type not supported.'))
 
     # full dataset pass
     vids = sorted(Path(dataset_root, "videos").glob("*.mp4"))
@@ -122,12 +57,12 @@ def extract_features(
         vid_cap = cv2.VideoCapture(vid)
         fps = float(vid_cap.get(cv2.CAP_PROP_FPS))
         total_frames = int(vid_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        vid_cap.release()
 
-        frame_ids = sample_frame_ids(fps=fps, total_frames=total_frames, sample_hz=sample_hz)
-        frames = read_frames_by_index(video_path=vid, frame_ids=frame_ids, transforms=transforms)
+        frame_ids = extractor.sample_timestamp_frames(fps=fps, total_frames=total_frames, sample_hz=sample_hz)
+        frames = extractor.preprocess_video_frames(video_capture=vid_cap, timestamp_frames=frame_ids)
+        vid_cap.release()
         
-        feats = extract_2d_features(model, frames, micro=64)
+        feats = extractor.extract_timestamp_features(model, frames, micro=64)
         del frames
         gc.collect()
 
@@ -140,6 +75,7 @@ def extract_features(
             total_frames=int(total_frames),
         )
         del feats, frame_ids
+
         gc.collect()
 
-extract_features()
+extract_dataset_features()
