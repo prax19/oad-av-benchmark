@@ -1,5 +1,6 @@
 from pathlib import Path
 from tqdm import tqdm
+from torchvision import datasets
 
 import cv2
 import numpy as np
@@ -11,17 +12,17 @@ from mmaction.apis import init_recognizer
 from weights import load_by_key
 from utils.torch_scripts import get_device
 from extraction import extractors
+from extraction.extractor_datasets import RoadExtractionDataset
 
 def extract_dataset_features(
     backbone = "tsn-kinetics-400",
-    dataset_root = Path("data/road"),
+    dataset = RoadExtractionDataset("data/road"),
     device = get_device(),
     sample_hz = 4
 ):
     # preparing config files and directories
     cfg_path, ckpt_path = load_by_key(backbone)
-    out_dir = dataset_root / f"features-{backbone}"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = dataset.get_extraction_directory(backbone=backbone)
 
     # model initialization
     cfg = Config.fromfile(str(cfg_path))
@@ -69,8 +70,7 @@ def extract_dataset_features(
     else:
         raise(NotImplementedError(f'{model_type} model type not supported.'))
 
-    vids = sorted(Path(dataset_root, "videos").glob("*.mp4"))
-    for vid in tqdm(vids, desc='Processing dataset', leave=False):
+    for vid in tqdm(dataset, desc='Processing dataset', leave=False):
         feat_path = Path(out_dir, f"{vid.stem}.npz")
         if feat_path.exists():
             continue
@@ -93,4 +93,4 @@ def extract_dataset_features(
             total_frames=int(total_frames),
         )
 
-extract_dataset_features(backbone='slowfast-kinetics-400')
+extract_dataset_features(backbone='tsn-kinetics-400')
