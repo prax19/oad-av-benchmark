@@ -1,6 +1,5 @@
 from pathlib import Path
 from tqdm import tqdm
-import gc
 
 import cv2
 import numpy as np
@@ -33,50 +32,42 @@ def extract_dataset_features(
     dp = cfg.model.data_preprocessor
     mean = [m/255.0 for m in dp.mean] if max(dp.mean) > 1 else list(dp.mean)
     std  = [s/255.0 for s in dp.std]  if max(dp.std)  > 1 else list(dp.std)
+    resize = cfg.val_dataloader.dataset.pipeline[3].scale[1]
+    crop_size = cfg.val_dataloader.dataset.pipeline[4].crop_size
 
     # preparing extraction config
     model_type = cfg.model.type
-
     extractor: extractors.Extractor = None
     if model_type == 'Recognizer2D':
-        transforms = extractors.Extractor_2D.compose_transforms(mean=mean, std=std)
-        extractor = extractors.Extractor_2D(transforms=transforms)
+        transforms = extractors.Extractor_2D.compose_transforms(
+            mean=mean, 
+            std=std,
+            resize=resize,
+            center_crop=crop_size
+        )
+        extractor = extractors.Extractor_2D(
+            model=model, 
+            transforms=transforms, 
+            sampling_hz=sample_hz
+        )
     elif model_type == 'Recognizer3D':
-        transforms = extractors.Extractor_3D.compose_transforms(mean=mean, std=std)
-        extractor = extractors.Extractor_3D(transforms=transforms)
+        frame_interval = cfg.val_dataloader.dataset.pipeline[1].frame_interval
+        clip_len = cfg.val_dataloader.dataset.pipeline[1].clip_len
+        transforms = extractors.Extractor_3D.compose_transforms(
+            mean=mean, 
+            std=std,
+            resize=resize,
+            center_crop=crop_size
+        )
+        extractor = extractors.Extractor_3D(
+            model=model, 
+            transforms=transforms, 
+            sampling_hz=sample_hz, 
+            frame_interval=frame_interval, 
+            clip_len=clip_len
+        )
     else:
         raise(NotImplementedError(f'{model_type} model type not supported.'))
-
-    # full dataset pass
-    # vids = sorted(Path(dataset_root, "videos").glob("*.mp4"))
-    # for vid in tqdm(vids, desc='Processing dataset', leave=False):
-    #     feat_path = Path(out_dir, f"{vid.stem}.npz")
-    #     if feat_path.exists():
-    #         continue
-
-    #     vid_cap = cv2.VideoCapture(vid)
-    #     fps = float(vid_cap.get(cv2.CAP_PROP_FPS))
-    #     total_frames = int(vid_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-    #     frame_ids = extractor.sample_timestamp_frames(fps=fps, total_frames=total_frames, sample_hz=sample_hz)
-    #     frames = extractor.preprocess_video_frames(video_capture=vid_cap, timestamp_frames=frame_ids)
-    #     feats = extractor.extract_timestamp_features(model, frames, micro=4)
-    #     vid_cap.release()
-
-    #     del frames, vid_cap
-    #     gc.collect()
-
-    #     np.savez(
-    #         feat_path,
-    #         x=feats.numpy().astype(np.float32),
-    #         frame_ids=frame_ids.astype(np.int64),
-    #         fps=float(fps),
-    #         hz=float(sample_hz),
-    #         total_frames=int(total_frames),
-    #     )
-
-    #     del feats, frame_ids
-    #     gc.collect()
 
     vids = sorted(Path(dataset_root, "videos").glob("*.mp4"))
     for vid in tqdm(vids, desc='Processing dataset', leave=False):
@@ -85,15 +76,11 @@ def extract_dataset_features(
             continue
 
         vid_cap = cv2.VideoCapture(vid)
+
         fps = float(vid_cap.get(cv2.CAP_PROP_FPS))
         total_frames = int(vid_cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-        timestamp_frames = extractor.sample_timestamp_frames(fps=fps, total_frames=total_frames, sample_hz=sample_hz)
-        feats, _ = extractor.extract_video_features(
-            model,
-            video_capture=vid_cap,
-            timestamp_frames=timestamp_frames
-        )
+        feats, timestamp_frames = extractor.extract_video_features(video_capture=vid_cap)
 
         vid_cap.release()
 
@@ -106,4 +93,4 @@ def extract_dataset_features(
             total_frames=int(total_frames),
         )
 
-extract_dataset_features(backbone='tsn-kinetics-400')
+extract_dataset_features(backbone='slowfast-kinetics-400')
