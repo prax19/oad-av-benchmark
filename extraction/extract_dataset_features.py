@@ -14,9 +14,11 @@ from utils.torch_scripts import get_device
 from extraction import extractors
 from extraction.extractor_datasets import RoadExtractionDataset
 
+from extraction.utils.json_filtering import filter_video_frames_by_id
+
 def extract_dataset_features(
     backbone = "tsn-kinetics-400",
-    dataset = RoadExtractionDataset("data/road"),
+    dataset = RoadExtractionDataset(root='data/road', dataset_config='road_trainval_v1.0.json'),
     device = get_device(),
     sample_hz = 4
 ):
@@ -70,7 +72,7 @@ def extract_dataset_features(
     else:
         raise(NotImplementedError(f'{model_type} model type not supported.'))
 
-    for vid in tqdm(dataset, desc='Processing dataset', leave=False):
+    for vid, label in tqdm(dataset, desc='Processing dataset', leave=False):
         feat_path = Path(out_dir, f"{vid.stem}.npz")
         if feat_path.exists():
             continue
@@ -87,6 +89,7 @@ def extract_dataset_features(
         np.savez(
             feat_path,
             x=feats.numpy().astype(np.float32),
+            y=filter_video_frames_by_id(label, timestamp_frames),
             frame_ids=timestamp_frames.astype(np.int64),
             fps=float(fps),
             hz=float(sample_hz),

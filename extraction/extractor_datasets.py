@@ -1,15 +1,18 @@
-from torchvision import datasets
+from torch.utils.data import Dataset
 from pathlib import Path
+import json
 
 from abc import abstractmethod, ABC
 
-class ExtractionDataset(ABC, datasets.VisionDataset):
+from extraction.utils.json_filtering import extract_labels_per_video
+
+class ExtractionDataset(ABC, Dataset):
     """
     An example dataset class for video extraction. This class should just output the paths to video files.
     """
 
     @abstractmethod
-    def __init__(self, root: str): pass
+    def __init__(self, root: str, dataset_config: str): pass
 
     @abstractmethod
     def __len__(self): pass
@@ -20,11 +23,13 @@ class ExtractionDataset(ABC, datasets.VisionDataset):
     @abstractmethod
     def get_extraction_directory(self, backbone: str) -> Path: pass
 
-class RoadExtractionDataset(datasets.VisionDataset):
+class RoadExtractionDataset(Dataset):
 
-    def __init__(self, root: str):
-        super().__init__(root, transform=None)
+    def __init__(self, root: str, dataset_config: str):
         self.root = Path(root)
+        self.cfg = Path(root, dataset_config)
+        if (not self.root.exists()) or (not self.cfg.exists()):
+            raise FileNotFoundError('Invalid dataset path.')
 
         self.video_index = list(self.root.glob('videos/*.mp4'))
 
@@ -32,9 +37,10 @@ class RoadExtractionDataset(datasets.VisionDataset):
         return len(self.video_index)
 
     def __getitem__(self, idx: int):
-        return Path(self.video_index[idx])
+        video_meta = extract_labels_per_video(dataset_cfg=self.cfg, video_id=self.video_index[idx].stem)
+        return Path(self.video_index[idx]), video_meta
     
     def get_extraction_directory(self, backbone: str) -> Path:
-        out_dir = Path(self.root, f"features-{backbone}")
+        out_dir = Path(self.root, f"features-{backbone}/features")
         out_dir.mkdir(parents=True, exist_ok=True)
         return Path(out_dir)
