@@ -1,0 +1,3 @@
+[submodule "methods/TeSTrA"]
+	path = methods/TeSTrA
+	url = https://github.com/zhaoyue-zephyrus/TeSTra.git

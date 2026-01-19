@@ -7,3 +7,5 @@ weights/backbones/*
 
 # A `sandbox` module. You can test your scripts there.
 sandbox/
+
+core/__pycache__

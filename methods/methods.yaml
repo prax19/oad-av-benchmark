@@ -1,0 +1,4 @@
+methods:
+  TeSTrA:
+    min_python: '3.7.7'
+    repo: https://github.com/zhaoyue-zephyrus/TeSTra
