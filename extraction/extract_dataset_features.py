@@ -86,8 +86,8 @@ def extract_dataset_features(
         np.savez(
             feat_path,
             x=feats.numpy().astype(np.float32),
-            y=label[timestamp_frames].astype(np.int16),
-            frame_ids=timestamp_frames.astype(np.int64),
+            y=label[timestamp_frames].astype(np.int8),
+            frame_ids=timestamp_frames.astype(np.uint32),
             fps=float(fps),
             hz=float(sample_hz),
             total_frames=int(total_frames),
