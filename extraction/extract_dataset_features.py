@@ -1,6 +1,5 @@
 from pathlib import Path
 from tqdm import tqdm
-from torchvision import datasets
 
 import cv2
 import numpy as np
@@ -13,8 +12,6 @@ from weights import load_by_key
 from utils.torch_scripts import get_device
 from extraction import extractors
 from extraction.extractor_datasets import RoadExtractionDataset
-
-from extraction.utils.json_filtering import filter_video_frames_by_id
 
 def extract_dataset_features(
     backbone = "tsn-kinetics-400",
@@ -89,7 +86,7 @@ def extract_dataset_features(
         np.savez(
             feat_path,
             x=feats.numpy().astype(np.float32),
-            y=filter_video_frames_by_id(label, timestamp_frames),
+            y=label[timestamp_frames].astype(np.int16),
             frame_ids=timestamp_frames.astype(np.int64),
             fps=float(fps),
             hz=float(sample_hz),

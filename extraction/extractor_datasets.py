@@ -2,45 +2,39 @@ from torch.utils.data import Dataset
 from pathlib import Path
 import json
 
-from abc import abstractmethod, ABC
-
-from extraction.utils.json_filtering import extract_labels_per_video
-
-class ExtractionDataset(ABC, Dataset):
-    """
-    An example dataset class for video extraction. This class should just output the paths to video files.
-    """
-
-    @abstractmethod
-    def __init__(self, root: str, dataset_config: str): pass
-
-    @abstractmethod
-    def __len__(self): pass
-
-    @abstractmethod
-    def __getitem__(self, idx: int): pass
-
-    @abstractmethod
-    def get_extraction_directory(self, backbone: str) -> Path: pass
+from extraction.utils.json_filtering import pack_av_cls_from_frames
 
 class RoadExtractionDataset(Dataset):
-
     def __init__(self, root: str, dataset_config: str):
         self.root = Path(root)
-        self.cfg = Path(root, dataset_config)
-        if (not self.root.exists()) or (not self.cfg.exists()):
-            raise FileNotFoundError('Invalid dataset path.')
+        self.cfg_path = self.root / dataset_config
+        if (not self.root.exists()) or (not self.cfg_path.exists()):
+            raise FileNotFoundError("Invalid dataset path.")
 
-        self.video_index = list(self.root.glob('videos/*.mp4'))
+        with open(self.cfg_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+
+        self.class_names = cfg["av_action_labels"]
+        self.num_classes = len(self.class_names)
+        self.db = cfg["db"]
+
+        self.video_index = list((self.root / "videos").glob("*.mp4"))
 
     def __len__(self):
         return len(self.video_index)
 
     def __getitem__(self, idx: int):
-        video_meta = extract_labels_per_video(dataset_cfg=self.cfg, video_id=self.video_index[idx].stem)
-        return Path(self.video_index[idx]), video_meta
+        vid_path = self.video_index[idx]
+        video_id = vid_path.stem
+
+        video_meta = self.db[video_id]
+        frames = video_meta["frames"]
+
+        labels = pack_av_cls_from_frames(frames, num_classes=self.num_classes)
+
+        return vid_path, labels
     
     def get_extraction_directory(self, backbone: str) -> Path:
-        out_dir = Path(self.root, f"features-{backbone}/features")
+        out_dir = self.root / f"features-{backbone}"
         out_dir.mkdir(parents=True, exist_ok=True)
-        return Path(out_dir)
+        return out_dir
