@@ -1,7 +1,7 @@
 import numpy as np
 import torch.utils.data as data
 from pathlib import Path
-import json
+import yaml
 from typing import Literal
 import warnings
 
@@ -38,17 +38,15 @@ class PreExtractedDataset(data.Dataset):
         # self._npz_cache = _NPZCache(max_items=cache_size, mmap_mode=cache_mmap)
         
         # Clip splitting
-        self.config = list(self.dataset_root.glob('*.json'))
-        if len(self.config) > 1:
-            raise FileExistsError("Invalid dataset config. There is multiple configs in the root direction.")
-        self.config = self.config[0]
+        self.config = Path(self.sessions_dir, 'meta.yaml')
+        if not self.config.exists():
+            raise FileNotFoundError("No `meta.yaml` file.")
 
         if not split_variant in range(0, 4):
             raise ValueError("Split variant value should be in range of [0, 3].")
 
-        with open(self.config) as json_config:
-            cfg = json.load(json_config)
-            self.action_labels = cfg['av_action_labels']
+        with open(self.config) as yaml_config:
+            cfg = yaml.safe_load(yaml_config)
 
             def _norm_split(s):
                 if s is None:
@@ -56,7 +54,7 @@ class PreExtractedDataset(data.Dataset):
                 s = str(s)
                 return s.split("_", 1)[0]
             
-            db = cfg["db"]
+            db = cfg['dataset']['videos']
             self.split_lut = {
                 vid: _norm_split(
                     meta.get("split_ids", [None] * (split_variant + 1))[split_variant]
@@ -66,8 +64,8 @@ class PreExtractedDataset(data.Dataset):
             }
         
         self.sessions = []
-        for session_pth in list(Path(self.sessions_dir, 'rgb').glob('*.npy')):
-            session_name = session_pth.stem
+        for session_name in db.keys():
+            session_pth = Path(self.sessions_dir, 'rgb', f'{session_name}.npy')
             split = self.split_lut[session_name]
             if (split.strip() == 'all') or (split_type == 'all') or (split.strip() == split_type.strip()):
                 self.sessions.append((session_pth, Path(self.sessions_dir, 'target_perframe', f'{session_name}.npy')))

@@ -29,10 +29,11 @@ class RoadExtractionDataset(Dataset):
 
         video_meta = self.db[video_id]
         frames = video_meta["frames"]
+        split = video_meta["split_ids"]
 
         labels = pack_av_cls_from_frames(frames, num_classes=self.num_classes)
 
-        return vid_path, labels
+        return vid_path, labels, split
     
     def get_extraction_directory(self, backbone: str) -> Path:
         out_dir = self.root / f"features-{backbone}" / "rgb"

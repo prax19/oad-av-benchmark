@@ -90,7 +90,7 @@ def extract_dataset_features(
         }
 
     try:
-        for vid, label in tqdm(dataset, desc='Processing dataset', leave=False, miniters=1, mininterval=0):
+        for vid, label, split in tqdm(dataset, desc='Processing dataset', leave=False):
             # Path handling
             feat_path = Path(out_dir, f"{vid.stem}.npy")
             tgt_path = Path(tgt_dir, f"{vid.stem}.npy")
@@ -127,7 +127,8 @@ def extract_dataset_features(
             meta["dataset"]["videos"][vid.stem] = {
                 "num_steps": int(x.shape[0]),
                 "total_frames": total_frames,
-                "fps": float(fps)
+                "fps": float(fps),
+                "split_ids": list(split)
             }
         print("\nExtraction finished.")
     except KeyboardInterrupt:
