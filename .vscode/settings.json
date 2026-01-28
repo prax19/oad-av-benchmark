@@ -2,5 +2,9 @@
   "terminal.integrated.env.windows": {
     "PYTHONPATH": "${workspaceFolder};${env:PYTHONPATH}"
   },
-  "python.terminal.executeInFileDir": false
+  "python.terminal.executeInFileDir": false,
+
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}/methods/TeSTrA/src" // currently used submodule
+  ]
 }

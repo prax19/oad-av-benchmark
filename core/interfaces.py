@@ -3,7 +3,7 @@ import torch
 from utils.torch_scripts import get_device
 
 from pathlib import Path
-from pkg_scope import use_method_src
+from core.pkg_scope import use_method_src
 
 from yacs.config import CfgNode as CN
 
@@ -16,7 +16,7 @@ class OADMethodAdapter(Protocol):
 class TeSTrAAdapter:
     name = "TeSTrA"
 
-    def __init__(self, repo_root: Path):
+    def __init__(self, repo_root: Path = Path(__file__).resolve().parents[1]):
         self.method_root = repo_root / "methods" / "TeSTrA"
         self.module_src = self.method_root / 'src'
 
@@ -45,15 +45,3 @@ class TeSTrAAdapter:
             args = SimpleNamespace(config_file=str(cfg_file), gpu=gpu, opts=opts or [])
             assert_and_infer_cfg(cfg, args)
             return cfg
-
-
-repo_root = Path(__file__).resolve().parents[1]
-adapter = TeSTrAAdapter(repo_root)
-
-data_info = adapter.method_root / "data" / "data_info.json"
-cfg = adapter.get_cfg(
-    Path('methods', 'TeSTrA', 'configs', 'THUMOS', 'TESTRA', 'testra_lite_long_512_work_8_kinetics_1x_box.yaml'),
-    opts=['DATA.DATA_INFO', str(data_info)]
-)
-model = adapter.build_model(cfg)
-
