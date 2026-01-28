@@ -35,6 +35,16 @@ class RoadExtractionDataset(Dataset):
         return vid_path, labels
     
     def get_extraction_directory(self, backbone: str) -> Path:
+        out_dir = self.root / f"features-{backbone}" / "rgb"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        return out_dir
+    
+    def get_target_directory(self, backbone) -> Path:
+        out_dir = self.root / f"features-{backbone}" / f"target_perframe"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        return out_dir
+    
+    def get_dump_directory(self, backbone) -> Path:
         out_dir = self.root / f"features-{backbone}"
         out_dir.mkdir(parents=True, exist_ok=True)
         return out_dir

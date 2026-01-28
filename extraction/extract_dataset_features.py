@@ -1,5 +1,6 @@
 from pathlib import Path
 from tqdm import tqdm
+import yaml
 
 import cv2
 import numpy as np
@@ -22,6 +23,8 @@ def extract_dataset_features(
     # preparing config files and directories
     cfg_path, ckpt_path = load_by_key(backbone)
     out_dir = dataset.get_extraction_directory(backbone=backbone)
+    tgt_dir = dataset.get_target_directory(backbone=backbone)
+    dump_root = dataset.get_dump_directory(backbone=backbone)
 
     # model initialization
     cfg = Config.fromfile(str(cfg_path))
@@ -69,28 +72,68 @@ def extract_dataset_features(
     else:
         raise(NotImplementedError(f'{model_type} model type not supported.'))
 
-    for vid, label in tqdm(dataset, desc='Processing dataset', leave=False):
-        feat_path = Path(out_dir, f"{vid.stem}.npz")
-        if feat_path.exists():
-            continue
+    # Metadata config / loading
+    meta_path = Path(dump_root, 'meta.yaml')
+    if meta_path.exists():
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta = yaml.safe_load(f)
+    else:
+        meta = { # metadata template
+            "dataset": {
+                "hz": float(sample_hz),
+                "paths": {
+                    "feats_dir": str(Path(out_dir)),
+                    "targets_dir": str(Path(tgt_dir))
+                },
+                "videos": {}
+            }
+        }
 
-        vid_cap = cv2.VideoCapture(vid)
+    try:
+        for vid, label in tqdm(dataset, desc='Processing dataset', leave=False, miniters=1, mininterval=0):
+            # Path handling
+            feat_path = Path(out_dir, f"{vid.stem}.npy")
+            tgt_path = Path(tgt_dir, f"{vid.stem}.npy")
+            paths = [feat_path, tgt_path]
 
-        fps = float(vid_cap.get(cv2.CAP_PROP_FPS))
-        total_frames = int(vid_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            feat_exists = feat_path.exists()
+            tgt_exists  = tgt_path.exists()
+            meta_exists = vid.stem in meta["dataset"]["videos"]
 
-        feats, timestamp_frames = extractor.extract_video_features(video_capture=vid_cap)
+            exists = [feat_exists, tgt_exists, meta_exists]
+            if all(exists):
+                continue
+            elif any(exists):
+                for p in paths:
+                    p.unlink(missing_ok=True)
+                meta["dataset"]["videos"].pop(vid.stem, None)
 
-        vid_cap.release()
+            # Video handling and extraction
+            vid_cap = cv2.VideoCapture(vid)
 
-        np.savez(
-            feat_path,
-            x=feats.numpy().astype(np.float32),
-            y=label[timestamp_frames].astype(np.int8),
-            frame_ids=timestamp_frames.astype(np.uint32),
-            fps=float(fps),
-            hz=float(sample_hz),
-            total_frames=int(total_frames),
-        )
+            fps = float(vid_cap.get(cv2.CAP_PROP_FPS))
+            total_frames = int(vid_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+            feats, timestamp_frames = extractor.extract_video_features(video_capture=vid_cap)
+            x = feats.numpy().astype(np.float32); y = label[timestamp_frames].astype(np.uint8)
+
+            vid_cap.release()
+
+            # Saving
+            np.save(feat_path, x)
+            np.save(tgt_path, y)
+
+            # Metadata saving
+            meta["dataset"]["videos"][vid.stem] = {
+                "num_steps": int(x.shape[0]),
+                "total_frames": total_frames,
+                "fps": float(fps)
+            }
+        print("\nExtraction finished.")
+    except KeyboardInterrupt:
+        print("\nExtraction stopped. Saving metadata...")
+    finally:
+        with open(meta_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(meta, f, sort_keys=False, allow_unicode=True)
 
 extract_dataset_features(backbone='tsn-kinetics-400')
