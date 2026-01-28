@@ -5,7 +5,7 @@ import yaml
 from typing import Literal
 import warnings
 
-from utils.caching import _NPZCache
+from utils.caching import _NPYCache
 
 SplitStr = Literal["all", "train", "val", "test"]
 
@@ -34,8 +34,8 @@ class PreExtractedDataset(data.Dataset):
         self.long = long
         self.work = work
 
-        # # Caching
-        # self._npz_cache = _NPZCache(max_items=cache_size, mmap_mode=cache_mmap)
+        # Caching
+        self._npz_cache = _NPYCache(max_items=cache_size, mmap_mode=cache_mmap)
         
         # Clip splitting
         self.config = Path(self.sessions_dir, 'meta.yaml')
@@ -54,34 +54,30 @@ class PreExtractedDataset(data.Dataset):
                 s = str(s)
                 return s.split("_", 1)[0]
             
-            db = cfg['dataset']['videos']
+            metadata_vid = cfg['dataset']['videos']
             self.split_lut = {
                 vid: _norm_split(
                     meta.get("split_ids", [None] * (split_variant + 1))[split_variant]
                     if len(meta.get("split_ids", [])) > split_variant else None
                 )
-                for vid, meta in db.items()
+                for vid, meta in metadata_vid.items()
             }
         
         self.sessions = []
-        for session_name in db.keys():
-            session_pth = Path(self.sessions_dir, 'rgb', f'{session_name}.npy')
+        for session_name in metadata_vid.keys():
             split = self.split_lut[session_name]
             if (split.strip() == 'all') or (split_type == 'all') or (split.strip() == split_type.strip()):
-                self.sessions.append((session_pth, Path(self.sessions_dir, 'target_perframe', f'{session_name}.npy')))
+                self.sessions.append(session_name)
 
         # Windowing map preparation
         T = long + work
         self.samples = []
         ignored_clips = 0
         ignored_frames = 0
-        for session_x_pth, session_y_pth in self.sessions:
-            x = np.load(session_x_pth); y = np.load(session_y_pth)
-
-            if len(x) != len(y):
-                raise ValueError(f"Length mismatch: len(x)={len(x)} len(y)={len(y)}")
-
-            N = len(x)
+        for vid, meta in {k: metadata_vid[k] for k in self.sessions if k in metadata_vid}.items():
+            session_x_pth = Path(self.sessions_dir, 'rgb', f'{vid}.npy')
+            session_y_pth = Path(self.sessions_dir, 'target_perframe', f'{vid}.npy')
+            N = meta['num_steps']
             if N < T:
                 ignored_clips = ignored_clips + 1
                 ignored_frames = ignored_frames + N
@@ -95,8 +91,8 @@ class PreExtractedDataset(data.Dataset):
     
     def __getitem__(self, index):
         session_x_pth, session_y_pth, start = self.samples[index]
-        session_x = np.load(session_x_pth)
-        session_y = np.load(session_y_pth)
+        session_x = self._npz_cache.get(session_x_pth)
+        session_y = self._npz_cache.get(session_y_pth)
         end = start + self.long + self.work
         x = session_x[start:end]
         y = session_y[end-self.work:end]
