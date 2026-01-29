@@ -2,7 +2,7 @@ from torch.utils.data import Dataset
 from pathlib import Path
 import json
 
-from extraction.utils.json_filtering import pack_av_cls_from_frames
+from extraction.utils.json_filtering import pack_av_multihot_from_frames
 
 class RoadExtractionDataset(Dataset):
     def __init__(self, root: str, dataset_config: str):
@@ -31,7 +31,7 @@ class RoadExtractionDataset(Dataset):
         frames = video_meta["frames"]
         split = video_meta["split_ids"]
 
-        labels = pack_av_cls_from_frames(frames, num_classes=self.num_classes)
+        labels = pack_av_multihot_from_frames(frames, num_classes=self.num_classes)
 
         return vid_path, labels, split
     

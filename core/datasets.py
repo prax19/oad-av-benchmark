@@ -1,4 +1,4 @@
-import numpy as np
+import torch
 import torch.utils.data as data
 from pathlib import Path
 import yaml
@@ -96,14 +96,7 @@ class PreExtractedDataset(data.Dataset):
         end = start + self.long + self.work
         x = session_x[start:end]
         y = session_y[end-self.work:end]
-        return x, y
+        return torch.from_numpy(x).float(), torch.from_numpy(y).float()
     
     def __len__(self):
         return len(self.samples)
-    
-dataset = PreExtractedDataset(
-    dataset_root='data/road', 
-    dataset_variant='features-tsn-kinetics-400',
-    split_variant=2,
-    split_type='train'
-)
