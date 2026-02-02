@@ -1,3 +1,12 @@
 [submodule "methods/TeSTrA"]
 	path = methods/TeSTrA
 	url = https://github.com/zhaoyue-zephyrus/TeSTra.git
+[submodule "methods/CMeRT"]
+	path = methods/CMeRT
+	url = https://github.com/pangzhan27/CMeRT
+[submodule "methods/MiniROAD"]
+	path = methods/MiniROAD
+	url = https://github.com/jbistanbul/MiniROAD
+[submodule "methods/MAT"]
+	path = methods/MAT
+	url = https://github.com/Echo0125/MAT-Memory-and-Anticipation-Transformer

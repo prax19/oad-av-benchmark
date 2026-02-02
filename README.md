@@ -44,3 +44,10 @@ Consider using `conda` or `Docker` to isolate your other projects or application
 For any custom dataset, there should be provided a proper `torch.utils.data.Dataset` implementation in `extraction\extractor_datasets.py` (for finding videos and labels) and `core\datasets.py` (reading `.npz` files and labels).
 
 *full instructions soon*
+
+## Tested methods
+This benchmark contains comparison of 4 *LSTR* family methods.
+- [TeSTrA](https://arxiv.org/pdf/2209.09236)
+- [CMeRT](https://arxiv.org/pdf/2503.18359)
+- [MAT](https://arxiv.org/pdf/2308.07893)
+- [MiniROAD](https://openaccess.thecvf.com/content/ICCV2023/papers/An_MiniROAD_Minimal_RNN_Framework_for_Online_Action_Detection_ICCV_2023_paper.pdf)

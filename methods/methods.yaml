@@ -2,3 +2,12 @@ methods:
   TeSTrA:
     min_python: '3.7.7'
     repo: https://github.com/zhaoyue-zephyrus/TeSTra
+  CMeRT:
+    min_python: '3.7.7'
+    repo: https://github.com/pangzhan27/CMeRT
+  MAT:
+    min_python: '3.7.7'
+    repo: https://github.com/Echo0125/MAT-Memory-and-Anticipation-Transformer
+  MiniROAD:
+    min_python: '3.7.7'
+    repo: https://github.com/jbistanbul/MiniROAD
