@@ -40,10 +40,8 @@ Consider using `conda` or `Docker` to isolate your other projects or application
 
 [comment]: <> (Continue with feature extraction)
 
-## Including own datasets
-For any custom dataset, there should be provided a proper `torch.utils.data.Dataset` implementation in `extraction\extractor_datasets.py` (for finding videos and labels) and `core\datasets.py` (reading `.npz` files and labels).
-
-*full instructions soon*
+## Including own elements
+Feel free to include own methods or datasets to this framework. 
 
 ## Tested methods
 This benchmark contains comparison of 4 *LSTR* family methods.
