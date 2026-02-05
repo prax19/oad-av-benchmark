@@ -1,12 +1,15 @@
 import torch
+from torch import nn
+
 from utils.torch_scripts import get_device
 
 from core.pkg_scope import use_method_src
-from utils.model_scripts import patch_lstr_3072_to_2048
+from utils.model_scripts import patch_lstr_3072_to_2048, unwrap_logits
 
 from yacs.config import CfgNode as CN
 from typing import Protocol, Any, Dict
 from pathlib import Path
+import inspect
 
 class OADMethodAdapter(Protocol):
     name: str
@@ -23,9 +26,9 @@ class LSTRAdapter(OADMethodAdapter, Protocol):
             out = build_model(cfg, get_device())
 
         if isinstance(out, tuple):
-            return out[0]
-        if isinstance(out, dict) and "model" in out:
-            return out["model"]
+            out = out[0]
+        elif isinstance(out, dict) and "model" in out:
+            out = out["model"]
         
         out = out.to(device)
 
@@ -51,9 +54,57 @@ class LSTRAdapter(OADMethodAdapter, Protocol):
             args = SimpleNamespace(config_file=str(cfg_file), gpu=gpu, opts=opts or [])
             assert_and_infer_cfg(cfg, args)
             return cfg
+        
+    def forward_logits(self, model, x: torch.Tensor, y: torch.Tensor | None, device):
+        B, T, _ = x.shape
+
+        motion_dim = getattr(self, "motion_dim", 0)
+        obj_dim    = getattr(self, "obj_dim", 0)
+
+        use_mask        = getattr(self, "use_mask", False)
+        third_arg_none  = getattr(self, "third_arg_none", False)
+        tail_none       = getattr(self, "tail_none", False)
+
+        motion = x.new_zeros((B, T, motion_dim))
+
+        if use_mask:
+            mask = x.new_zeros((B, T))
+            return model(x, motion, mask)
+
+        if third_arg_none:
+            return model(x, motion, None)
+
+        obj = x.new_zeros((B, T, obj_dim))
+        if tail_none:
+            return model(x, motion, obj, None)
+
+        return model(x, motion, obj)
+    
+    def normalize_logits(self, logits, y: torch.Tensor, model: nn.Module, device) -> torch.Tensor:
+        logits = unwrap_logits(logits)
+
+        if not torch.is_tensor(logits):
+            raise TypeError(f"{self.name}: logits is not a Tensor after unwrap: {type(logits)}")
+
+        if logits.dim() == 3 and y.dim() == 3:
+            work = y.shape[1]
+            if logits.shape[1] > work:
+                logits = logits[:, -work:, :]
+            elif logits.shape[1] < work:
+                raise ValueError(f"{self.name}: logits T={logits.shape[1]} < work={work}")
+
+        if logits.dim() == 3 and y.dim() == 3 and logits.shape[-1] != y.shape[-1]:
+            if not hasattr(model, "_adapter_head"):
+                model._adapter_head = nn.Linear(logits.shape[-1], y.shape[-1]).to(device)
+            logits = model._adapter_head(logits)
+
+        return logits
 
 class TeSTrAAdapter(LSTRAdapter):
     name = "TeSTrA"
+    motion_dim = 0
+    obj_dim = 0
+    tail_none = True
 
     def __init__(self, repo_root: Path = Path(__file__).resolve().parents[1]):
         self.method_root = repo_root / "methods" / "TeSTrA"
@@ -61,6 +112,8 @@ class TeSTrAAdapter(LSTRAdapter):
 
 class CMeRTAdapter(LSTRAdapter):
     name = "CMeRT"
+    motion_dim = 1024
+    third_arg_none = True
 
     def __init__(self, repo_root: Path = Path(__file__).resolve().parents[1]):
         self.method_root = repo_root / "methods" / "CMeRT"
@@ -68,6 +121,8 @@ class CMeRTAdapter(LSTRAdapter):
 
 class MATAdapter(LSTRAdapter):
     name = "MAT"
+    motion_dim = 1024
+    use_mask = True
 
     def __init__(self, repo_root: Path = Path(__file__).resolve().parents[1]):
         self.method_root = repo_root / "methods" / "MAT"
@@ -94,7 +149,7 @@ class MiniROADAdapter(OADMethodAdapter):
         if hasattr(out, "classifier") and out.classifier.out_features != num_classes:
             in_f = out.classifier.in_features
             out.classifier = torch.nn.Linear(in_f, num_classes).to(device)
-            
+
         return out
         
     def apply_opts(self, cfg: dict, opts: list[str]) -> dict:
@@ -122,3 +177,18 @@ class MiniROADAdapter(OADMethodAdapter):
             cfg = self.apply_opts(cfg, opts)
 
         return cfg
+    
+    def forward_logits(self, model, x: torch.Tensor, y: torch.Tensor | None, device):
+        if not hasattr(model, "_adapter_num_args"):
+            params = list(inspect.signature(model.forward).parameters.values())
+            model._adapter_num_args = len([p for p in params if p.name != "self"])
+
+        n = model._adapter_num_args
+        if n == 1:
+            return model(x)
+        if n == 2:
+            return model(x, None)
+        return model(x, None, None)
+    
+    def normalize_logits(self, logits, y: torch.Tensor, model: torch.nn.Module, device) -> torch.Tensor:
+        return LSTRAdapter.normalize_logits(self, logits, y, model, device)

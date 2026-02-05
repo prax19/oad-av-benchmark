@@ -30,9 +30,15 @@ def patch_lstr_3072_to_2048(model: nn.Module, device) -> nn.Module:
     return model
 
 def unwrap_logits(logits):
+    preferred_keys = ("logits", "pred", "preds", "scores", "output", "outputs")
     while isinstance(logits, (list, tuple, dict)):
         if isinstance(logits, dict):
-            logits = next(iter(logits.values()))
+            for k in preferred_keys:
+                if k in logits:
+                    logits = logits[k]
+                    break
+            else:
+                logits = next(iter(logits.values()))
         else:
             logits = logits[0]
     return logits
