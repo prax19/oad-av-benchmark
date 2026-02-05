@@ -17,6 +17,6 @@ class _NPYCache:
         self._cache[path] = arr
 
         if len(self._cache) > self.max_items:
-            self._cache.popitem(last=False)  # nic nie zamykamy
+            self._cache.popitem(last=False)
 
         return arr

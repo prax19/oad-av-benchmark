@@ -41,7 +41,7 @@ Consider using `conda` or `Docker` to isolate your other projects or application
 [comment]: <> (Continue with feature extraction)
 
 ## Including own elements
-Feel free to include own methods or datasets to this framework. 
+Feel free to include own methods or datasets to this framework. You can find more info in [`CONTRIBUTING.md`](CONTRIBUTING.md) guide.
 
 ## Tested methods
 This benchmark contains comparison of 4 *LSTR* family methods.
