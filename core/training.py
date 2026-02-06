@@ -7,7 +7,9 @@ from core.adapters import OADMethodAdapter
 from utils.torch_scripts import get_device
 
 
-def setup_dataset():
+def setup_dataset(
+    batch_size = 32
+):
     dataset = PreExtractedDataset(
         dataset_root="data/road",
         dataset_variant="features-tsn-kinetics-400",
@@ -18,7 +20,7 @@ def setup_dataset():
 
     loader = DataLoader(
         dataset,
-        batch_size=32,
+        batch_size=batch_size,
         shuffle=True,
         num_workers=8,
         persistent_workers=True,
@@ -119,17 +121,25 @@ def train_model(
         epoch_pbar.set_description(f"epoch {epoch}/{epochs}")
         epoch_pbar.set_postfix(loss=f"{avg_loss:.4f}")
 
-from pathlib import Path
-from core.adapters import MiniROADAdapter
+# from pathlib import Path
+# from core.adapters import *
 
-def main():
-    adapter = MiniROADAdapter()
-    data_info = adapter.method_root / "data_info" / "video_list.json"
-    cfg = adapter.get_cfg(
-        Path("methods", "MiniROAD", "configs", "miniroad_thumos_kinetics.yaml"),
-        opts=["DATA.DATA_INFO", str(data_info)],
-    )
-    train_model(adapter=adapter, cfg=cfg)
+# def main():
+#     adapter = MiniROADAdapter()
+#     cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
+#     train_model(adapter=adapter, cfg=cfg, epochs=1)
 
-if __name__ == "__main__":
-    main()
+#     adapter = TeSTrAAdapter()
+#     cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
+#     train_model(adapter=adapter, cfg=cfg, epochs=1)
+
+#     adapter = MATAdapter()
+#     cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
+#     train_model(adapter=adapter, cfg=cfg, epochs=1)
+
+#     adapter = CMeRTAdapter()
+#     cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
+#     train_model(adapter=adapter, cfg=cfg, epochs=1)
+
+# if __name__ == "__main__":
+#     main()

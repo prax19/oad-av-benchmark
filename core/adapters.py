@@ -14,11 +14,14 @@ import inspect
 class OADMethodAdapter(Protocol):
     name: str
     def build_model(self, cfg: Dict[str, Any], num_classes, device) -> torch.nn.Module: ...
-    def get_default_cfg(self) -> Dict[str, Any]: ...
+    def get_cfg(self, cfg_file: Path, gpu="0", opts=None) -> Dict[str, Any]: ...
 
 class LSTRAdapter(OADMethodAdapter, Protocol):
 
-    def __init__(self, repo_root: Path = Path(__file__).resolve().parents[1]): ...
+    def __init__(
+        self,
+        repo_root: Path = Path(__file__).resolve().parents[1]
+    ): ...
 
     def build_model(self, cfg, num_classes, device) -> torch.nn.Module:
         with use_method_src(self.module_src):
@@ -106,9 +109,14 @@ class TeSTrAAdapter(LSTRAdapter):
     obj_dim = 0
     tail_none = True
 
-    def __init__(self, repo_root: Path = Path(__file__).resolve().parents[1]):
+    def __init__(
+        self,
+        repo_root: Path = Path(__file__).resolve().parents[1]
+    ):
         self.method_root = repo_root / "methods" / "TeSTrA"
         self.module_src = self.method_root / 'src'
+        self.default_cfg = self.method_root / "configs" / "THUMOS" / "TESTRA" / "testra_lite_long_512_work_8_kinetics_1x_box.yaml"
+        self.default_data_info = self.method_root / "data" / "data_info.json"
 
 class CMeRTAdapter(LSTRAdapter):
     name = "CMeRT"
@@ -118,6 +126,8 @@ class CMeRTAdapter(LSTRAdapter):
     def __init__(self, repo_root: Path = Path(__file__).resolve().parents[1]):
         self.method_root = repo_root / "methods" / "CMeRT"
         self.module_src = self.method_root / 'src'
+        self.default_cfg = self.method_root / "configs" / "THUMOS" / "cmert_long256_work4_kinetics_1x.yaml"
+        self.default_data_info = self.method_root / "data" / "data_info.json"
 
 class MATAdapter(LSTRAdapter):
     name = "MAT"
@@ -127,6 +137,8 @@ class MATAdapter(LSTRAdapter):
     def __init__(self, repo_root: Path = Path(__file__).resolve().parents[1]):
         self.method_root = repo_root / "methods" / "MAT"
         self.module_src = self.method_root / 'src'
+        self.default_cfg = self.method_root / "configs" / "THUMOS" / "MAT" / "mat_long_256_work_8_kinetics_1x.yaml"
+        self.default_data_info = self.method_root / "data" / "data_info.json"
 
 class MiniROADAdapter(OADMethodAdapter):
     name = "MiniROAD"
@@ -134,6 +146,8 @@ class MiniROADAdapter(OADMethodAdapter):
     def __init__(self, repo_root: Path = Path(__file__).resolve().parents[1]):
         self.method_root = repo_root / "methods" / "MiniROAD"
         self.module_src = self.method_root
+        self.default_cfg = self.method_root / "configs" / "miniroad_thumos_kinetics.yaml"
+        self.default_data_info = self.method_root / "data_info" / "video_list.json"
 
     def build_model(self, cfg, num_classes, device):
         with use_method_src(
