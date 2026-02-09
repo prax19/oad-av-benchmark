@@ -8,20 +8,25 @@ from utils.torch_scripts import get_device
 
 
 def setup_dataset(
-    batch_size = 32
+    batch_size = 32,
+    split_type: str = "train",
+    split_variant: int = 2,
+    dataset_root: str = "data/road",
+    dataset_variant: str = "features-tsn-kinetics-400",
+    shuffle: bool = True,
 ):
     dataset = PreExtractedDataset(
-        dataset_root="data/road",
-        dataset_variant="features-tsn-kinetics-400",
-        split_variant=2,
-        split_type="train",
+        dataset_root=dataset_root,
+        dataset_variant=dataset_variant,
+        split_variant=split_variant,
+        split_type=split_type,
         cache_mmap="r",
     )
 
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=shuffle,
         num_workers=8,
         persistent_workers=True,
         prefetch_factor=2,
@@ -47,7 +52,7 @@ def train_epoch(
 
     batch_pbar = tqdm(
         loader,
-        desc=f"batches {epoch}/{epochs}",
+        desc=f"train batches | epoch {epoch}/{epochs}",
         position=1,
         leave=False,
         dynamic_ncols=True,
@@ -70,7 +75,7 @@ def train_epoch(
         running += loss_val
         n += 1
 
-        batch_pbar.set_postfix(loss=f"{loss_val:.4f}", avg=f"{running / n:.4f}")
+        batch_pbar.set_postfix(batch_loss=f"{loss_val:.4f}", running_loss=f"{running / n:.4f}")
 
     return running / max(1, n)
 
@@ -80,9 +85,21 @@ def train_model(
     cfg: dict,
     device=get_device(),
     epochs=5,
+    batch_size: int = 32,
+    split_type: str = "train",
+    split_variant: int = 2,
+    dataset_root: str = "data/road",
+    dataset_variant: str = "features-tsn-kinetics-400",
+    shuffle: bool = True,
 ):
-    # TODO: make it parametrizable
-    loader, dataset = setup_dataset()
+    loader, dataset = setup_dataset(
+        batch_size=batch_size,
+        split_type=split_type,
+        split_variant=split_variant,
+        dataset_root=dataset_root,
+        dataset_variant=dataset_variant,
+        shuffle=shuffle,
+    )
 
     model = adapter.build_model(
         cfg=cfg,
@@ -96,7 +113,7 @@ def train_model(
 
     epoch_pbar = tqdm(
         range(1, epochs + 1),
-        desc="epoch",
+        desc=f"train epochs | adapter={adapter.name}",
         position=0,
         leave=True,
         dynamic_ncols=True,
@@ -104,7 +121,7 @@ def train_model(
 
     prev_loss = None
     for epoch in epoch_pbar:
-        epoch_pbar.set_postfix(prev=f"{prev_loss:.4f}" if prev_loss is not None else "n/a")
+        epoch_pbar.set_postfix(epoch=f"{epoch}/{epochs}", prev_loss=f"{prev_loss:.4f}" if prev_loss is not None else "n/a")
 
         avg_loss = train_epoch(
             model=model,
@@ -118,8 +135,7 @@ def train_model(
         )
 
         prev_loss = avg_loss
-        epoch_pbar.set_description(f"epoch {epoch}/{epochs}")
-        epoch_pbar.set_postfix(loss=f"{avg_loss:.4f}")
+        epoch_pbar.set_postfix(epoch=f"{epoch}/{epochs}", train_loss=f"{avg_loss:.4f}")
 
 # from pathlib import Path
 # from core.adapters import *
