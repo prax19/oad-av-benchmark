@@ -2,33 +2,10 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from core.datasets import PreExtractedDataset
 from core.adapters import OADMethodAdapter
+from core.common import setup_dataset
+
 from utils.torch_scripts import get_device
-
-
-def setup_dataset(
-    batch_size = 32
-):
-    dataset = PreExtractedDataset(
-        dataset_root="data/road",
-        dataset_variant="features-tsn-kinetics-400",
-        split_variant=2,
-        split_type="train",
-        cache_mmap="r",
-    )
-
-    loader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=8,
-        persistent_workers=True,
-        prefetch_factor=2,
-        pin_memory=False,
-    )
-
-    return loader, dataset
 
 
 def train_epoch(
@@ -80,9 +57,22 @@ def train_model(
     cfg: dict,
     device=get_device(),
     epochs=5,
+    batch_size: int = 16,
+    split_type: str = "train",
+    split_variant: int = 2,
+    dataset_root: str = "data/road",
+    dataset_variant: str = "features-tsn-kinetics-400",
+    shuffle: bool = True,
 ):
     # TODO: make it parametrizable
-    loader, dataset = setup_dataset()
+    loader, dataset = setup_dataset(
+        batch_size=batch_size,
+        split_type=split_type,
+        split_variant=split_variant,
+        dataset_root=dataset_root,
+        dataset_variant=dataset_variant,
+        shuffle=shuffle,
+    )
 
     model = adapter.build_model(
         cfg=cfg,
@@ -121,25 +111,27 @@ def train_model(
         epoch_pbar.set_description(f"epoch {epoch}/{epochs}")
         epoch_pbar.set_postfix(loss=f"{avg_loss:.4f}")
 
-# from pathlib import Path
-# from core.adapters import *
 
-# def main():
-#     adapter = MiniROADAdapter()
-#     cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
-#     train_model(adapter=adapter, cfg=cfg, epochs=1)
 
-#     adapter = TeSTrAAdapter()
-#     cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
-#     train_model(adapter=adapter, cfg=cfg, epochs=1)
+from pathlib import Path
+from core.adapters import *
 
-#     adapter = MATAdapter()
-#     cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
-#     train_model(adapter=adapter, cfg=cfg, epochs=1)
+def main():
+    adapter = MiniROADAdapter()
+    cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
+    train_model(adapter=adapter, cfg=cfg, epochs=1)
 
-#     adapter = CMeRTAdapter()
-#     cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
-#     train_model(adapter=adapter, cfg=cfg, epochs=1)
+    adapter = TeSTrAAdapter()
+    cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
+    train_model(adapter=adapter, cfg=cfg, epochs=1)
 
-# if __name__ == "__main__":
-#     main()
+    adapter = MATAdapter()
+    cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
+    train_model(adapter=adapter, cfg=cfg, epochs=1)
+
+    adapter = CMeRTAdapter()
+    cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
+    train_model(adapter=adapter, cfg=cfg, epochs=1)
+
+if __name__ == "__main__":
+    main()
