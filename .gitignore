@@ -9,3 +9,5 @@ weights/backbones/*
 sandbox/
 
 core/__pycache__
+
+diff.txt

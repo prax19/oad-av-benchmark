@@ -94,8 +94,8 @@ class PreExtractedDataset(data.Dataset):
         session_x = self._npz_cache.get(session_x_pth)
         session_y = self._npz_cache.get(session_y_pth)
         end = start + self.long + self.work
-        x = session_x[start:end]
-        y = session_y[end-self.work:end]
+        x = session_x[start:end].copy()
+        y = session_y[end-self.work:end].copy()
         return torch.from_numpy(x).float(), torch.from_numpy(y).float()
     
     def __len__(self):

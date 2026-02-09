@@ -4,6 +4,7 @@ from tqdm import tqdm
 
 from core.adapters import OADMethodAdapter
 from core.common import setup_dataset
+from core.evaluation import evaluate_model
 
 from utils.torch_scripts import get_device
 
@@ -24,7 +25,7 @@ def train_epoch(
 
     batch_pbar = tqdm(
         loader,
-        desc=f"batches {epoch}/{epochs}",
+        desc=f"epochs {epoch}/{epochs}",
         position=1,
         leave=False,
         dynamic_ncols=True,
@@ -47,7 +48,7 @@ def train_epoch(
         running += loss_val
         n += 1
 
-        batch_pbar.set_postfix(loss=f"{loss_val:.4f}", avg=f"{running / n:.4f}")
+        batch_pbar.set_postfix(batch_loss=f"{loss_val:.4f}", running_loss=f"{running / n:.4f}")
 
     return running / max(1, n)
 
@@ -65,7 +66,7 @@ def train_model(
     shuffle: bool = True,
 ):
     # TODO: make it parametrizable
-    loader, dataset = setup_dataset(
+    train_loader, train_dataset = setup_dataset(
         batch_size=batch_size,
         split_type=split_type,
         split_variant=split_variant,
@@ -74,19 +75,28 @@ def train_model(
         shuffle=shuffle,
     )
 
+    val_loader, _ = setup_dataset(
+        batch_size=batch_size,
+        split_type="val",
+        split_variant=split_variant,
+        dataset_root=dataset_root,
+        dataset_variant=dataset_variant,
+        shuffle=shuffle,
+    )
+
     model = adapter.build_model(
         cfg=cfg,
-        num_classes=dataset[0][1].shape[-1],
+        num_classes=train_dataset[0][1].shape[-1],
         device=device,
     )
 
     # TODO: make it parametrizable
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-4)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5, weight_decay=1e-2)
     criterion = torch.nn.BCEWithLogitsLoss()
 
     epoch_pbar = tqdm(
         range(1, epochs + 1),
-        desc="epoch",
+        desc=f"train epochs | adapter={adapter.name}",
         position=0,
         leave=True,
         dynamic_ncols=True,
@@ -94,12 +104,12 @@ def train_model(
 
     prev_loss = None
     for epoch in epoch_pbar:
-        epoch_pbar.set_postfix(prev=f"{prev_loss:.4f}" if prev_loss is not None else "n/a")
+        epoch_pbar.set_postfix(epoch=f"{epoch}/{epochs}", prev_loss=f"{prev_loss:.4f}" if prev_loss is not None else "n/a")
 
         avg_loss = train_epoch(
             model=model,
             adapter=adapter,
-            loader=loader,
+            loader=train_loader,
             optimizer=optimizer,
             criterion=criterion,
             device=device,
@@ -108,30 +118,38 @@ def train_model(
         )
 
         prev_loss = avg_loss
-        epoch_pbar.set_description(f"epoch {epoch}/{epochs}")
-        epoch_pbar.set_postfix(loss=f"{avg_loss:.4f}")
+        epoch_pbar.set_postfix(epoch=f"{epoch}/{epochs}", train_loss=f"{avg_loss:.4f}")
 
+        metrics = evaluate_model(
+            adapter=adapter,
+            model=model,
+            loader=val_loader
+        )
+        print(metrics)
 
-
-from pathlib import Path
 from core.adapters import *
 
 def main():
-    adapter = MiniROADAdapter()
-    cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
-    train_model(adapter=adapter, cfg=cfg, epochs=1)
+    # adapter = MiniROADAdapter()
+    # cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
+    # train_model(adapter=adapter, cfg=cfg, epochs=1)
+
+    # adapter = TeSTrAAdapter()
+    # cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
+    # train_model(adapter=adapter, cfg=cfg, epochs=1)
+
+    # adapter = MATAdapter()
+    # cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
+    # train_model(adapter=adapter, cfg=cfg, epochs=1)
+
+    # adapter = CMeRTAdapter()
+    # cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
+    # train_model(adapter=adapter, cfg=cfg, epochs=1)
 
     adapter = TeSTrAAdapter()
     cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
-    train_model(adapter=adapter, cfg=cfg, epochs=1)
+    train_model(adapter=adapter, cfg=cfg, epochs=5)
 
-    adapter = MATAdapter()
-    cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
-    train_model(adapter=adapter, cfg=cfg, epochs=1)
-
-    adapter = CMeRTAdapter()
-    cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
-    train_model(adapter=adapter, cfg=cfg, epochs=1)
 
 if __name__ == "__main__":
     main()
