@@ -99,6 +99,7 @@ class LSTRAdapter(OADMethodAdapter, Protocol):
         if logits.dim() == 3 and y.dim() == 3 and logits.shape[-1] != y.shape[-1]:
             if not hasattr(model, "_adapter_head"):
                 model._adapter_head = nn.Linear(logits.shape[-1], y.shape[-1]).to(device)
+                print(f"[adapter] created projection head: {logits.shape[-1]} -> {y.shape[-1]}")
             logits = model._adapter_head(logits)
 
         return logits

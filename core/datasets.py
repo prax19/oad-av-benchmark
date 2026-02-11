@@ -26,6 +26,8 @@ class PreExtractedDataset(data.Dataset):
         self.sessions_dir = Path(dataset_root, dataset_variant)
 
         required = ["rgb", "target_perframe"]
+        self.annotated_dir = self.sessions_dir / "annotated_perframe"
+        self.has_annotation_mask = self.annotated_dir.exists()
         missing = [name for name in required if not (self.sessions_dir / name).exists()]
 
         if missing:
@@ -77,6 +79,7 @@ class PreExtractedDataset(data.Dataset):
         for vid, meta in {k: metadata_vid[k] for k in self.sessions if k in metadata_vid}.items():
             session_x_pth = Path(self.sessions_dir, 'rgb', f'{vid}.npy')
             session_y_pth = Path(self.sessions_dir, 'target_perframe', f'{vid}.npy')
+            session_a_pth = Path(self.annotated_dir, f'{vid}.npy') if self.has_annotation_mask else None
             N = meta['num_steps']
             if N < T:
                 ignored_clips = ignored_clips + 1
@@ -84,19 +87,27 @@ class PreExtractedDataset(data.Dataset):
                 continue
 
             for start in range(0, N - T + 1, stride):
-                self.samples.append((session_x_pth, session_y_pth, start))
+                self.samples.append((session_x_pth, session_y_pth, session_a_pth, start))
         
         if ignored_clips != 0:
             warnings.warn(f'Ignored {ignored_clips} clip(s) containing {ignored_frames} frames.', RuntimeWarning)
     
     def __getitem__(self, index):
-        session_x_pth, session_y_pth, start = self.samples[index]
+        session_x_pth, session_y_pth, session_a_pth, start = self.samples[index]
         session_x = self._npz_cache.get(session_x_pth)
         session_y = self._npz_cache.get(session_y_pth)
         end = start + self.long + self.work
         x = session_x[start:end].copy()
         y = session_y[end-self.work:end].copy()
-        return torch.from_numpy(x).float(), torch.from_numpy(y).float()
+        
+        if session_a_pth is not None and session_a_pth.exists():
+            session_a = self._npz_cache.get(session_a_pth)
+            ann = session_a[end-self.work:end].copy()
+        else:
+            ann = None
+
+        ann_t = torch.from_numpy(ann).bool() if ann is not None else torch.ones((self.work,), dtype=torch.bool)
+        return torch.from_numpy(x).float(), torch.from_numpy(y).float(), ann_t
     
     def __len__(self):
         return len(self.samples)

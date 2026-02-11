@@ -31,10 +31,15 @@ class RoadExtractionDataset(Dataset):
         frames = video_meta["frames"]
         split = video_meta["split_ids"]
 
-        labels = pack_av_multihot_from_frames(frames, num_classes=self.num_classes)
+        labels, annotated = pack_av_multihot_from_frames(frames, num_classes=self.num_classes)
 
-        return vid_path, labels, split
+        return vid_path, labels, annotated, split
     
+    def get_annotated_directory(self, backbone) -> Path:
+        out_dir = self.root / f"features-{backbone}" / f"annotated_perframe"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        return out_dir
+
     def get_extraction_directory(self, backbone: str) -> Path:
         out_dir = self.root / f"features-{backbone}" / "rgb"
         out_dir.mkdir(parents=True, exist_ok=True)

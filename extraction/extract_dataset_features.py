@@ -7,7 +7,6 @@ import numpy as np
 
 from mmengine import Config
 from mmaction.apis import init_recognizer
-from mmaction.apis import init_recognizer
 
 from weights import load_by_key
 from utils.torch_scripts import get_device
@@ -24,6 +23,7 @@ def extract_dataset_features(
     cfg_path, ckpt_path = load_by_key(backbone)
     out_dir = dataset.get_extraction_directory(backbone=backbone)
     tgt_dir = dataset.get_target_directory(backbone=backbone)
+    ann_dir = dataset.get_annotated_directory(backbone=backbone)
     dump_root = dataset.get_dump_directory(backbone=backbone)
 
     # model initialization
@@ -83,24 +83,27 @@ def extract_dataset_features(
                 "hz": float(sample_hz),
                 "paths": {
                     "feats_dir": str(Path(out_dir)),
-                    "targets_dir": str(Path(tgt_dir))
+                    "targets_dir": str(Path(tgt_dir)),
+                    "annotated_dir": str(Path(ann_dir))
                 },
                 "videos": {}
             }
         }
 
     try:
-        for vid, label, split in tqdm(dataset, desc='Processing dataset', leave=False):
+        for vid, label, annotated, split in tqdm(dataset, desc='Processing dataset', leave=False):
             # Path handling
             feat_path = Path(out_dir, f"{vid.stem}.npy")
             tgt_path = Path(tgt_dir, f"{vid.stem}.npy")
-            paths = [feat_path, tgt_path]
+            ann_path = Path(ann_dir, f"{vid.stem}.npy")
+            paths = [feat_path, tgt_path, ann_path]
 
             feat_exists = feat_path.exists()
             tgt_exists  = tgt_path.exists()
+            ann_exists  = ann_path.exists()
             meta_exists = vid.stem in meta["dataset"]["videos"]
 
-            exists = [feat_exists, tgt_exists, meta_exists]
+            exists = [feat_exists, tgt_exists, ann_exists, meta_exists]
             if all(exists):
                 continue
             elif any(exists):
@@ -115,13 +118,16 @@ def extract_dataset_features(
             total_frames = int(vid_cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
             feats, timestamp_frames = extractor.extract_video_features(video_capture=vid_cap)
-            x = feats.numpy().astype(np.float32); y = label[timestamp_frames].astype(np.uint8)
+            x = feats.numpy().astype(np.float32)
+            y = label[timestamp_frames].astype(np.uint8)
+            a = annotated[timestamp_frames].astype(np.bool_)
 
             vid_cap.release()
 
             # Saving
             np.save(feat_path, x)
             np.save(tgt_path, y)
+            np.save(ann_path, a)
 
             # Metadata saving
             meta["dataset"]["videos"][vid.stem] = {
