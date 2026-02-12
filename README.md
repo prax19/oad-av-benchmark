@@ -2,14 +2,13 @@
 A small framework created to compare some *SOTA* *online action detection* methods, with focus on appliance in *ADAS* and *ADS*.
 
 ## Setup instructions
-Consider using `conda` or `Docker` to isolate your other projects or applications you use. Take a note, that Python version must be `3.11` for this setup.
+Consider using `conda` or `Docker` to isolate your other projects or applications you use. Take a note, that **Python must be `3.11`** and **Torch `2.9.0`** for this setup.
 
-1. Install the proper `PyTorch` wheel for your hardware:
+1. Install the proper `Torch` wheel for your hardware:
     - [CUDA / CPU](https://pytorch.org/get-started/locally/)
     - [XPU](https://docs.pytorch.org/docs/stable/notes/get_start_xpu.html)
-2. Run `pip install -r requirements.txt` to install basic requirements
-3. Run `python setup/get_mmaction2.py` to install [`MMAction2`](https://github.com/open-mmlab/mmaction2)
-4. *(optional)* Download `ROAD_Waymo` from [here](https://console.cloud.google.com/storage/browser/waymo_open_dataset_road_plus_plus)
+2. Run `python setup/setup_dependencies.py` to install [`MMAction2`](https://github.com/open-mmlab/mmaction2) and other dependencies from [`requirements.txt`](requirements.txt)
+3. *(optional)* Download `ROAD_Waymo` from [here](https://console.cloud.google.com/storage/browser/waymo_open_dataset_road_plus_plus)
     - Download `videos` and `road_waymo_trainval_v1.0.json` with [gsutil](https://docs.cloud.google.com/storage/docs/gsutil_install), and place these files in `./data/road_waymo`
         ``` Bash
         mkdir "data/road_waymo"
@@ -19,7 +18,7 @@ Consider using `conda` or `Docker` to isolate your other projects or application
         cd ../..
         ```
         **You need to [register yourself](https://waymo.com/open/download/) and accept terms of use before downloading.**
-5. Run `python setup/get_road.py`
+4. Run `python setup/get_road.py`
     - `./data/` file structure should be following (including `ROAD_Waymo`):
         ```
         road-waymo/

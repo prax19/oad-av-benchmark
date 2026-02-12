@@ -1,2 +1,5 @@
 python-certifi-win32; platform_system == "Windows"
 scikit-learn
+tqdm
+pandas
+yacs==0.1.8

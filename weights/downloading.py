@@ -2,7 +2,6 @@ import os
 import sys
 import yaml
 import glob
-import subprocess
 import time
 from pathlib import Path
 import shutil
@@ -13,22 +12,25 @@ def _download_reference(reference: str, name: str, retries=3, retry_sec=15):
     # It sometimes just doesn't work because of certificates.
     # However there is no other "official" way so probably MMAction2 is just limited.
     # Once backbone is downloaded, `mim` wouldn't be triggered anymore.
-    py = sys.executable
-    cmd = [
-        py, '-m', 'mim', 'download', 'mmaction2', 
-        '--config', reference,
-        '--dest', f'weights/backbones/{name}'
-    ]
+    dest = Path("weights/backbones") / name
+    dest.mkdir(parents=True, exist_ok=True)
 
+    from mim import download
+
+    last_err = None
     for i in range(retries):
         try:
-            subprocess.run(cmd, check=True)
+            download("mmaction2", [reference], dest_root=str(dest))
             return
-        except subprocess.CalledProcessError:
+        except Exception as e:
+            last_err = e
             if i == retries - 1:
                 raise
-            print(f'Retry: {i+1}/{retries} in {retry_sec}s')
+            print(f"Retry: {i+1}/{retries} in {retry_sec}s ({e})")
             time.sleep(retry_sec)
+
+    raise last_err
+
 
 def load_by_key(key: str):
     backbones_root = Path('weights/backbones/')
