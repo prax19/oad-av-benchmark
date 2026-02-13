@@ -80,6 +80,7 @@ class PreExtractedDataset(data.Dataset):
             session_x_pth = Path(self.sessions_dir, 'rgb', f'{vid}.npy')
             session_y_pth = Path(self.sessions_dir, 'target_perframe', f'{vid}.npy')
             session_a_pth = Path(self.annotated_dir, f'{vid}.npy') if self.has_annotation_mask else None
+            has_ann_file = bool(session_a_pth is not None and session_a_pth.exists())
             N = meta['num_steps']
             if N < T:
                 ignored_clips = ignored_clips + 1
@@ -87,20 +88,20 @@ class PreExtractedDataset(data.Dataset):
                 continue
 
             for start in range(0, N - T + 1, stride):
-                self.samples.append((session_x_pth, session_y_pth, session_a_pth, start))
+                self.samples.append((session_x_pth, session_y_pth, session_a_pth, has_ann_file, start))
         
         if ignored_clips != 0:
             warnings.warn(f'Ignored {ignored_clips} clip(s) containing {ignored_frames} frames.', RuntimeWarning)
     
     def __getitem__(self, index):
-        session_x_pth, session_y_pth, session_a_pth, start = self.samples[index]
+        session_x_pth, session_y_pth, session_a_pth, has_ann_file, start = self.samples[index]
         session_x = self._npz_cache.get(session_x_pth)
         session_y = self._npz_cache.get(session_y_pth)
         end = start + self.long + self.work
-        x = session_x[start:end].copy()
-        y = session_y[end-self.work:end].copy()
+        x = session_x[start:end]
+        y = session_y[end-self.work:end]
         
-        if session_a_pth is not None and session_a_pth.exists():
+        if has_ann_file:
             session_a = self._npz_cache.get(session_a_pth)
             ann = session_a[end-self.work:end].copy()
         else:

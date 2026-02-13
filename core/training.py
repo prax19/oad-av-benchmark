@@ -6,7 +6,8 @@ from core.adapters import OADMethodAdapter
 from core.common import setup_dataset
 from core.evaluation import evaluate_model
 
-from utils.torch_scripts import get_device
+from utils.torch_scripts import get_device, autocast_for, is_cuda_device
+
 
 def _initialize_adapter_head_if_needed(model, adapter: OADMethodAdapter, loader: DataLoader, device) -> None:
     """
@@ -24,6 +25,7 @@ def _initialize_adapter_head_if_needed(model, adapter: OADMethodAdapter, loader:
     with torch.no_grad():
         logits = adapter.forward_logits(model, x, y, device)
         _ = adapter.normalize_logits(logits, y, model, device)
+
 
 def estimate_pos_weight(
     loader: DataLoader,
@@ -68,6 +70,7 @@ def _set_finetune_mode(model: torch.nn.Module) -> None:
         is_head = ("classifier" in name) or ("_adapter_head" in name)
         param.requires_grad = is_head
 
+
 def train_epoch(
     model,
     adapter: OADMethodAdapter,
@@ -78,6 +81,8 @@ def train_epoch(
     epoch: int,
     epochs: int,
     max_grad_norm: float | None = None,
+    use_amp: bool = True,
+    scaler: torch.amp.GradScaler | None = None,
 ):
     model.train()
     running = 0.0
@@ -96,20 +101,29 @@ def train_epoch(
         y = y.to(device, non_blocking=True)
         ann = ann.to(device, non_blocking=True)
 
-        logits = adapter.forward_logits(model, x, y, device)
-        logits = adapter.normalize_logits(logits, y, model, device)
-
-        loss_raw = criterion(logits, y)
-        frame_loss = loss_raw.mean(dim=-1)
-        mask = ann.to(frame_loss.dtype)
-        denom = mask.sum().clamp_min(1.0)
-        loss = (frame_loss * mask).sum() / denom
-
         optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        if max_grad_norm is not None and max_grad_norm > 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
-        optimizer.step()
+        with autocast_for(device=device, enabled=use_amp):
+            logits = adapter.forward_logits(model, x, y, device)
+            logits = adapter.normalize_logits(logits, y, model, device)
+
+            loss_raw = criterion(logits, y)
+            frame_loss = loss_raw.mean(dim=-1)
+            mask = ann.to(frame_loss.dtype)
+            denom = mask.sum().clamp_min(1.0)
+            loss = (frame_loss * mask).sum() / denom
+
+        if scaler is not None:
+            scaler.scale(loss).backward()
+            if max_grad_norm is not None and max_grad_norm > 0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            if max_grad_norm is not None and max_grad_norm > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+            optimizer.step()
 
         loss_val = float(loss.detach().item())
         running += loss_val
@@ -132,8 +146,12 @@ def train_model(
     dataset_variant: str = "features-tsn-kinetics-400",
     shuffle: bool = True,
     max_grad_norm: float | None = 1.0,
-    lr = 5e-5,
-    wd = 1e-3
+    lr=5e-5,
+    wd=1e-3,
+    num_workers: int = 8,
+    prefetch_factor: int = 2,
+    pin_memory: bool | None = None,
+    use_amp: bool = True,
 ):
     # TODO: make it parametrizable
     train_loader, train_dataset = setup_dataset(
@@ -143,6 +161,9 @@ def train_model(
         dataset_root=dataset_root,
         dataset_variant=dataset_variant,
         shuffle=shuffle,
+        num_workers=num_workers,
+        prefetch_factor=prefetch_factor,
+        pin_memory=pin_memory,
     )
 
     val_loader, _ = setup_dataset(
@@ -152,6 +173,9 @@ def train_model(
         dataset_root=dataset_root,
         dataset_variant=dataset_variant,
         shuffle=False,
+        num_workers=num_workers,
+        prefetch_factor=prefetch_factor,
+        pin_memory=pin_memory,
     )
 
     model = adapter.build_model(
@@ -162,11 +186,16 @@ def train_model(
 
     _initialize_adapter_head_if_needed(model=model, adapter=adapter, loader=train_loader, device=device)
 
+    if is_cuda_device(device):
+        torch.backends.cudnn.benchmark = True
 
     _set_finetune_mode(model)
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     if not trainable_params:
         raise RuntimeError("No trainable parameters found after freezing backbone.")
+
+    amp_enabled = bool(use_amp and (str(device).startswith("cuda") or str(device).startswith("xpu")))
+    scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled and is_cuda_device(device))
 
     # TODO: make it parametrizable
     optimizer = torch.optim.AdamW(trainable_params, lr=lr, weight_decay=wd)
@@ -175,7 +204,6 @@ def train_model(
 
     if hasattr(model, "_adapter_head"):
         print("[train] optimizer includes _adapter_head parameters")
-
 
     epoch_pbar = tqdm(
         range(1, epochs + 1),
@@ -202,6 +230,8 @@ def train_model(
             epoch=epoch,
             epochs=epochs,
             max_grad_norm=max_grad_norm,
+            use_amp=amp_enabled,
+            scaler=scaler if scaler.is_enabled() else None,
         )
 
         prev_loss = avg_loss
@@ -210,7 +240,7 @@ def train_model(
         metrics = evaluate_model(
             adapter=adapter,
             model=model,
-            loader=val_loader
+            loader=val_loader,
         )
 
         current_map = float(metrics.get("map_macro", 0.0))
@@ -223,7 +253,9 @@ def train_model(
 
         print(metrics)
 
+
 from core.adapters import *
+
 
 def main():
     # adapter = MiniROADAdapter()
@@ -244,15 +276,12 @@ def main():
 
     adapter = TeSTrAAdapter()
     cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
-    train_model(adapter=adapter, cfg=cfg, epochs=20, lr=1e-4, wd=1e-3)
+    train_model(adapter=adapter, cfg=cfg, epochs=20, batch_size=32, num_workers=12, prefetch_factor = 8, lr=1e-4, wd=1e-3)
 
     adapter = TeSTrAAdapter()
     cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
-    train_model(adapter=adapter, cfg=cfg, epochs=20, lr=2e-4, wd=5e-4)
+    train_model(adapter=adapter, cfg=cfg, epochs=20, batch_size=32, num_workers=12, prefetch_factor = 8, lr=5e-5, wd=1e-3)
 
-    adapter = TeSTrAAdapter()
-    cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
-    train_model(adapter=adapter, cfg=cfg, epochs=20, lr=5e-5, wd=1e-3)
 
 if __name__ == "__main__":
     main()
