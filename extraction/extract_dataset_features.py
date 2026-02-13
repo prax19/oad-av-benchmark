@@ -118,6 +118,14 @@ def extract_dataset_features(
             total_frames = int(vid_cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
             feats, timestamp_frames = extractor.extract_video_features(video_capture=vid_cap, device=device, micro=32)
+            timestamp_frames = np.asarray(timestamp_frames, dtype=np.int64)
+
+            if timestamp_frames.size and len(label) > 0:
+                valid_mask = timestamp_frames < len(label)
+                if not np.all(valid_mask):
+                    timestamp_frames = timestamp_frames[valid_mask]
+                    feats = feats[valid_mask]
+
             x = feats.numpy().astype(np.float32)
             y = label[timestamp_frames].astype(np.uint8)
             a = annotated[timestamp_frames].astype(np.bool_)

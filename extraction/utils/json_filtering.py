@@ -1,7 +1,7 @@
 import numpy as np
 
 def pack_av_cls_from_frames(frames: dict, num_classes: int = 7, default: int = -1):
-    numf = len(frames)
+    numf = max((int(k) for k in frames.keys()), default=0)
     y = np.full((numf,), default, dtype=np.int16)
 
     for fk_str, fr in frames.items():
@@ -23,7 +23,7 @@ def pack_av_cls_from_frames(frames: dict, num_classes: int = 7, default: int = -
     return y
 
 def pack_av_multihot_from_frames(frames: dict, num_classes: int):
-    numf = len(frames)
+    numf = max((int(k) for k in frames.keys()), default=0)
     y = np.zeros((numf, num_classes), dtype=np.uint8)
     annotated = np.zeros((numf,), dtype=np.bool_)
 

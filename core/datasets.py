@@ -107,8 +107,10 @@ class PreExtractedDataset(data.Dataset):
         else:
             ann = None
 
-        ann_t = torch.from_numpy(ann).bool() if ann is not None else torch.ones((self.work,), dtype=torch.bool)
-        return torch.from_numpy(x).float(), torch.from_numpy(y).float(), ann_t
+        ann_t = torch.as_tensor(ann, dtype=torch.bool).clone() if ann is not None else torch.ones((self.work,), dtype=torch.bool)
+        x_t = torch.as_tensor(x, dtype=torch.float32).clone()
+        y_t = torch.as_tensor(y, dtype=torch.float32).clone()
+        return x_t, y_t, ann_t
     
     def __len__(self):
         return len(self.samples)
