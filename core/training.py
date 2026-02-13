@@ -61,6 +61,13 @@ def estimate_pos_weight(
     print(f"[train] used_pos_weight={pw.detach().cpu().tolist()}")
     return pw
 
+
+def _set_finetune_mode(model: torch.nn.Module) -> None:
+    """Permanently freeze backbone; train classification heads only."""
+    for name, param in model.named_parameters():
+        is_head = ("classifier" in name) or ("_adapter_head" in name)
+        param.requires_grad = is_head
+
 def train_epoch(
     model,
     adapter: OADMethodAdapter,
@@ -70,6 +77,7 @@ def train_epoch(
     device,
     epoch: int,
     epochs: int,
+    max_grad_norm: float | None = None,
 ):
     model.train()
     running = 0.0
@@ -92,12 +100,15 @@ def train_epoch(
         logits = adapter.normalize_logits(logits, y, model, device)
 
         loss_raw = criterion(logits, y)
-        mask = ann.unsqueeze(-1).to(loss_raw.dtype)
+        frame_loss = loss_raw.mean(dim=-1)
+        mask = ann.to(frame_loss.dtype)
         denom = mask.sum().clamp_min(1.0)
-        loss = (loss_raw * mask).sum() / denom
+        loss = (frame_loss * mask).sum() / denom
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
+        if max_grad_norm is not None and max_grad_norm > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
         optimizer.step()
 
         loss_val = float(loss.detach().item())
@@ -120,6 +131,9 @@ def train_model(
     dataset_root: str = "data/road",
     dataset_variant: str = "features-tsn-kinetics-400",
     shuffle: bool = True,
+    max_grad_norm: float | None = 1.0,
+    lr = 5e-5,
+    wd = 1e-3
 ):
     # TODO: make it parametrizable
     train_loader, train_dataset = setup_dataset(
@@ -149,8 +163,13 @@ def train_model(
     _initialize_adapter_head_if_needed(model=model, adapter=adapter, loader=train_loader, device=device)
 
 
+    _set_finetune_mode(model)
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    if not trainable_params:
+        raise RuntimeError("No trainable parameters found after freezing backbone.")
+
     # TODO: make it parametrizable
-    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5, weight_decay=1e-3)
+    optimizer = torch.optim.AdamW(trainable_params, lr=lr, weight_decay=wd)
     pos_weight = estimate_pos_weight(loader=train_loader, device=device)
     criterion = torch.nn.BCEWithLogitsLoss(reduction="none", pos_weight=pos_weight)
 
@@ -182,6 +201,7 @@ def train_model(
             device=device,
             epoch=epoch,
             epochs=epochs,
+            max_grad_norm=max_grad_norm,
         )
 
         prev_loss = avg_loss
@@ -224,15 +244,15 @@ def main():
 
     adapter = TeSTrAAdapter()
     cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
-    train_model(adapter=adapter, cfg=cfg, epochs=5)
+    train_model(adapter=adapter, cfg=cfg, epochs=20, lr=1e-4, wd=1e-3)
 
     adapter = TeSTrAAdapter()
     cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
-    train_model(adapter=adapter, cfg=cfg, epochs=5)
+    train_model(adapter=adapter, cfg=cfg, epochs=20, lr=2e-4, wd=5e-4)
 
     adapter = TeSTrAAdapter()
     cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
-    train_model(adapter=adapter, cfg=cfg, epochs=5)
+    train_model(adapter=adapter, cfg=cfg, epochs=20, lr=5e-5, wd=1e-3)
 
 if __name__ == "__main__":
     main()

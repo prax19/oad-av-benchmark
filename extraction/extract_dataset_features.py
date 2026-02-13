@@ -117,7 +117,7 @@ def extract_dataset_features(
             fps = float(vid_cap.get(cv2.CAP_PROP_FPS))
             total_frames = int(vid_cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-            feats, timestamp_frames = extractor.extract_video_features(video_capture=vid_cap)
+            feats, timestamp_frames = extractor.extract_video_features(video_capture=vid_cap, device=device, micro=32)
             x = feats.numpy().astype(np.float32)
             y = label[timestamp_frames].astype(np.uint8)
             a = annotated[timestamp_frames].astype(np.bool_)
