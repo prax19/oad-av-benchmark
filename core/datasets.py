@@ -1,19 +1,23 @@
+import json
+import warnings
+from pathlib import Path
+from typing import Literal
+
 import torch
 import torch.utils.data as data
-from pathlib import Path
 import yaml
-from typing import Literal
-import warnings
 
 from utils.caching import _NPYCache
 
 SplitStr = Literal["all", "train", "val", "test"]
 
+
 class PreExtractedDataset(data.Dataset):
 
-    def __init__(self, 
-        dataset_root: str, 
-        dataset_variant: str, 
+    def __init__(
+        self,
+        dataset_root: str,
+        dataset_variant: str,
         split_type: str | SplitStr = 'all',
         split_variant: int = 0,
         long: int = 512,    # context memory
@@ -32,19 +36,22 @@ class PreExtractedDataset(data.Dataset):
 
         if missing:
             raise FileNotFoundError(f"Missing subdirs in {self.sessions_dir}: {missing}")
-        
+
         self.long = long
         self.work = work
 
         # Caching
         self._npz_cache = _NPYCache(max_items=cache_size, mmap_mode=cache_mmap)
-        
+
+        # Class names (ROAD)
+        self.class_names = self._load_class_names()
+
         # Clip splitting
         self.config = Path(self.sessions_dir, 'meta.yaml')
         if not self.config.exists():
             raise FileNotFoundError("No `meta.yaml` file.")
 
-        if not split_variant in range(0, 4):
+        if split_variant not in range(0, 4):
             raise ValueError("Split variant value should be in range of [0, 3].")
 
         with open(self.config) as yaml_config:
@@ -55,7 +62,7 @@ class PreExtractedDataset(data.Dataset):
                     return None
                 s = str(s)
                 return s.split("_", 1)[0]
-            
+
             metadata_vid = cfg['dataset']['videos']
             self.split_lut = {
                 vid: _norm_split(
@@ -64,7 +71,7 @@ class PreExtractedDataset(data.Dataset):
                 )
                 for vid, meta in metadata_vid.items()
             }
-        
+
         self.sessions = []
         for session_name in metadata_vid.keys():
             split = self.split_lut[session_name]
@@ -89,10 +96,42 @@ class PreExtractedDataset(data.Dataset):
 
             for start in range(0, N - T + 1, stride):
                 self.samples.append((session_x_pth, session_y_pth, session_a_pth, has_ann_file, start))
-        
+
         if ignored_clips != 0:
             warnings.warn(f'Ignored {ignored_clips} clip(s) containing {ignored_frames} frames.', RuntimeWarning)
-    
+
+    def _load_class_names(self) -> dict[int, str]:
+        candidates = [
+            self.dataset_root / "road_trainval_v1.0.json",
+            self.dataset_root / "road_waymo_trainval_v1.0.json",
+        ]
+
+        for cfg_path in candidates:
+            if not cfg_path.exists():
+                continue
+            try:
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                labels = cfg.get("av_action_labels")
+                if isinstance(labels, list) and labels:
+                    return {i: str(name) for i, name in enumerate(labels)}
+            except Exception:
+                continue
+
+        # Fallback: infer class count from targets and create synthetic names.
+        tgt_files = sorted((self.sessions_dir / "target_perframe").glob("*.npy"))
+        if tgt_files:
+            try:
+                import numpy as np
+                y = np.load(tgt_files[0], mmap_mode="r")
+                num_classes = int(y.shape[-1]) if y.ndim >= 2 else 0
+                if num_classes > 0:
+                    return {i: f"class_{i}" for i in range(num_classes)}
+            except Exception:
+                pass
+
+        return {}
+
     def __getitem__(self, index):
         session_x_pth, session_y_pth, session_a_pth, has_ann_file, start = self.samples[index]
         session_x = self._npz_cache.get(session_x_pth)
@@ -100,17 +139,15 @@ class PreExtractedDataset(data.Dataset):
         end = start + self.long + self.work
         x = session_x[start:end]
         y = session_y[end-self.work:end]
-        
+
         if has_ann_file:
             session_a = self._npz_cache.get(session_a_pth)
             ann = session_a[end-self.work:end].copy()
         else:
             ann = None
 
-        ann_t = torch.as_tensor(ann, dtype=torch.bool).clone() if ann is not None else torch.ones((self.work,), dtype=torch.bool)
-        x_t = torch.as_tensor(x, dtype=torch.float32).clone()
-        y_t = torch.as_tensor(y, dtype=torch.float32).clone()
-        return x_t, y_t, ann_t
-    
+        ann_t = torch.from_numpy(ann).bool() if ann is not None else torch.ones((self.work,), dtype=torch.bool)
+        return torch.from_numpy(x).float(), torch.from_numpy(y).float(), ann_t
+
     def __len__(self):
         return len(self.samples)

@@ -134,9 +134,10 @@ def train_epoch(
         running += loss_val
         n += 1
 
-        batch_pbar.set_postfix(batch_loss=f"{loss_val:.4f}", running_loss=f"{running / n:.4f}")
+        # batch tqdm: only current loss
+        batch_pbar.set_postfix(loss=f"{loss_val:.4f}")
 
-    return running / max(1, n)
+    return running / max(1, n), n
 
 
 def train_model(
@@ -158,7 +159,7 @@ def train_model(
     pin_memory: bool | None = None,
     use_amp: bool = True,
     min_lr_ratio: float = 0.1,
-    logger: Logger = Logger()
+    logger: Logger | None = None,
 ):
     train_loader, train_dataset = setup_dataset(
         batch_size=batch_size,
@@ -215,6 +216,27 @@ def train_model(
         eta_min=lr * min_lr_ratio,
     )
 
+    if logger is None:
+        logger = Logger(
+            name=f"{adapter.name}_",
+            metadata={
+                "method": adapter.name,
+                "epochs": epochs,
+                "batch_size": batch_size,
+                "num_workers": num_workers,
+                "prefetch_factor": prefetch_factor,
+                "lr_initial": lr,
+                "weight_decay": wd,
+                "scheduler": scheduler.__class__.__name__,
+                "loss": criterion.__class__.__name__,
+                "min_lr_ratio": min_lr_ratio,
+                "split_type": split_type,
+                "split_variant": split_variant,
+                "dataset_root": dataset_root,
+                "dataset_variant": dataset_variant,
+            },
+        )
+
     if hasattr(model, "_adapter_head"):
         print("[train] optimizer includes _adapter_head parameters")
 
@@ -226,12 +248,20 @@ def train_model(
         dynamic_ncols=True,
     )
 
-    prev_loss = None
+    prev_train_loss: float | None = None
+    prev_val_loss: float | None = None
+    prev_map_macro: float | None = None
+    steps = 0
 
     for epoch in epoch_pbar:
-        epoch_pbar.set_postfix(epoch=f"{epoch}/{epochs}", prev_loss=f"{prev_loss:.4f}" if prev_loss is not None else "n/a")
+        # epoch tqdm: only previous train loss, val loss and macro mAP
+        epoch_pbar.set_postfix(
+            prev_train_loss=f"{prev_train_loss:.4f}" if prev_train_loss is not None else "n/a",
+            prev_val_loss=f"{prev_val_loss:.4f}" if prev_val_loss is not None else "n/a",
+            prev_map_macro=f"{prev_map_macro:.4f}" if prev_map_macro is not None else "n/a",
+        )
 
-        avg_loss = train_epoch(
+        avg_train_loss, epoch_steps = train_epoch(
             model=model,
             adapter=adapter,
             loader=train_loader,
@@ -245,9 +275,7 @@ def train_model(
             scaler=scaler if scaler.is_enabled() else None,
             scheduler=scheduler,
         )
-
-        prev_loss = avg_loss
-        epoch_pbar.set_postfix(epoch=f"{epoch}/{epochs}", train_loss=f"{avg_loss:.4f}")
+        steps += epoch_steps
 
         metrics = evaluate_model(
             adapter=adapter,
@@ -255,8 +283,24 @@ def train_model(
             loader=val_loader,
         )
 
-        metadata = {"test": 5}
+        avg_val_loss = float(metrics.get("bce_loss", 0.0))
+        map_macro = float(metrics.get("map_macro", 0.0))
+
+        metadata = {
+            "epoch": epoch,
+            "steps": steps,
+            "lr": float(optimizer.param_groups[0]["lr"]),
+            "train_loss": float(avg_train_loss),
+            "val_loss": avg_val_loss,
+        }
         logger.log_event(metrics, metadata)
+
+        prev_train_loss = float(avg_train_loss)
+        prev_val_loss = avg_val_loss
+        prev_map_macro = map_macro
+
+    # Format raw NDJSON to YAML and cleanup raw on successful sanity-check.
+    logger.finalize()
 
 
 from core.adapters import *
@@ -264,10 +308,6 @@ from core.adapters import *
 
 def main():
     # adapter = MiniROADAdapter()
-    # cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
-    # train_model(adapter=adapter, cfg=cfg, epochs=1)
-
-    # adapter = TeSTrAAdapter()
     # cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
     # train_model(adapter=adapter, cfg=cfg, epochs=1)
 
@@ -279,19 +319,28 @@ def main():
     # cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
     # train_model(adapter=adapter, cfg=cfg, epochs=1)
 
+    # Sweep loop prepared for LR/WD/cosine floor experiments.
+    lr_values = [1e-4, 5e-5, 2e-4]
+    wd_values = [1e-4, 5e-4]
+    min_lr_ratio_values = [0.1, 0.05]
+
     adapter = TeSTrAAdapter()
     cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
-    train_model(
-        adapter=adapter,
-        cfg=cfg,
-        epochs=40,
-        batch_size=32,
-        num_workers=8,
-        prefetch_factor=4,
-        lr=1e-4,
-        wd=1e-4,
-        min_lr_ratio=0.1,
-    )
+
+    for lr in lr_values:
+        for wd in wd_values:
+            for min_lr_ratio in min_lr_ratio_values:
+                train_model(
+                    adapter=adapter,
+                    cfg=cfg,
+                    epochs=40,
+                    batch_size=32,
+                    num_workers=8,
+                    prefetch_factor=4,
+                    lr=lr,
+                    wd=wd,
+                    min_lr_ratio=min_lr_ratio,
+                )
 
 
 if __name__ == "__main__":

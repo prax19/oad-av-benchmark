@@ -1,3 +1,5 @@
+import re
+
 import torch
 from tqdm import tqdm
 from sklearn.metrics import average_precision_score, f1_score
@@ -30,6 +32,14 @@ def _flatten_time_batch(logits: torch.Tensor, targets: torch.Tensor, annotated: 
     return flat_logits, flat_targets, flat_ann
 
 
+def _metric_name_for_class(class_name: str, class_id: int) -> str:
+    safe = re.sub(r"[^0-9a-zA-Z_]+", "_", class_name.strip())
+    safe = re.sub(r"_+", "_", safe).strip("_")
+    if not safe:
+        safe = f"class_{class_id}"
+    return safe
+
+
 @torch.no_grad()
 def evaluate_model(
     adapter: OADMethodAdapter,
@@ -41,11 +51,6 @@ def evaluate_model(
 
     if model is None:
         pass
-        # model = adapter.build_model(
-        #     cfg=cfg,
-        #     num_classes=dataset[0][1].shape[-1],
-        #     device=device,
-        # )
 
     model.eval()
     criterion = torch.nn.BCEWithLogitsLoss(reduction="none")
@@ -84,7 +89,7 @@ def evaluate_model(
         probs_all.append(torch.sigmoid(selected_logits).cpu())
         targets_all.append(selected_targets.cpu())
 
-        eval_pbar.set_postfix(batch_loss=f"{losses[-1]:.4f}", running_loss=f"{sum(losses) / len(losses):.4f}")
+        eval_pbar.set_postfix(loss=f"{losses[-1]:.4f}")
 
     if not probs_all:
         return {
@@ -100,25 +105,31 @@ def evaluate_model(
     y_true = torch.cat(targets_all, dim=0).numpy()
     y_pred = (y_prob >= threshold).astype(int)
 
+    dataset_class_names = getattr(loader.dataset, "class_names", {}) if hasattr(loader, "dataset") else {}
+    if not isinstance(dataset_class_names, dict):
+        dataset_class_names = {}
+
     per_class_ap: dict[str, float] = {}
     ap_all: list[float] = []
     ap_present: list[float] = []
 
     for c in range(y_true.shape[1]):
-        class_name = f"class_{c}"
+        class_name = str(dataset_class_names.get(c, f"class_{c}"))
+        metric_name = _metric_name_for_class(class_name, c)
+
         if y_true[:, c].max() == 0:
-            per_class_ap[class_name] = 0.0
+            per_class_ap[metric_name] = 0.0
             ap_all.append(0.0)
             continue
 
         ap = float(average_precision_score(y_true[:, c], y_prob[:, c]))
-        per_class_ap[class_name] = ap
+        per_class_ap[metric_name] = ap
         ap_all.append(ap)
         ap_present.append(ap)
 
-    # Common in many OAD scripts: macro AP over classes that actually appear in the split.
+    # Common in many OAD scripts: macro AP over classes present in the split.
     map_macro = float(sum(ap_present) / len(ap_present)) if ap_present else 0.0
-    # Stricter variant: macro AP over all classes (absent classes count as 0).
+    # Stricter variant: macro AP over all classes (missing classes count as zero AP).
     map_macro_all = float(sum(ap_all) / len(ap_all)) if ap_all else 0.0
 
     metrics = {
