@@ -88,33 +88,45 @@ def evaluate_model(
 
     if not probs_all:
         return {
-            "num_samples": 0,
-            "num_classes": 0,
             "bce_loss": 0.0,
             "map_macro": 0.0,
+            "map_macro_all": 0.0,
             "f1_micro": 0.0,
             "f1_macro": 0.0,
+            "per_class_ap": {},
         }
-
 
     y_prob = torch.cat(probs_all, dim=0).numpy()
     y_true = torch.cat(targets_all, dim=0).numpy()
     y_pred = (y_prob >= threshold).astype(int)
 
-    per_class_ap = []
-    for c in range(y_true.shape[1]):
-        if y_true[:, c].max() == 0:
-            continue
-        per_class_ap.append(average_precision_score(y_true[:, c], y_prob[:, c]))
+    per_class_ap: dict[str, float] = {}
+    ap_all: list[float] = []
+    ap_present: list[float] = []
 
-    map_macro = float(sum(per_class_ap) / len(per_class_ap)) if per_class_ap else 0.0
+    for c in range(y_true.shape[1]):
+        class_name = f"class_{c}"
+        if y_true[:, c].max() == 0:
+            per_class_ap[class_name] = 0.0
+            ap_all.append(0.0)
+            continue
+
+        ap = float(average_precision_score(y_true[:, c], y_prob[:, c]))
+        per_class_ap[class_name] = ap
+        ap_all.append(ap)
+        ap_present.append(ap)
+
+    # Common in many OAD scripts: macro AP over classes that actually appear in the split.
+    map_macro = float(sum(ap_present) / len(ap_present)) if ap_present else 0.0
+    # Stricter variant: macro AP over all classes (absent classes count as 0).
+    map_macro_all = float(sum(ap_all) / len(ap_all)) if ap_all else 0.0
 
     metrics = {
-        "num_samples": int(y_true.shape[0]),
-        "num_classes": int(y_true.shape[1]),
         "bce_loss": float(sum(losses) / max(1, len(losses))),
         "map_macro": map_macro,
+        "map_macro_all": map_macro_all,
         "f1_micro": float(f1_score(y_true, y_pred, average="micro", zero_division=0)),
         "f1_macro": float(f1_score(y_true, y_pred, average="macro", zero_division=0)),
+        "per_class_ap": per_class_ap,
     }
     return metrics

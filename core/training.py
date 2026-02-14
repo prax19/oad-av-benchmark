@@ -5,6 +5,7 @@ from tqdm import tqdm
 from core.adapters import OADMethodAdapter
 from core.common import setup_dataset
 from core.evaluation import evaluate_model
+from core.logger import Logger
 
 from utils.torch_scripts import get_device, autocast_for, is_cuda_device
 
@@ -83,6 +84,7 @@ def train_epoch(
     max_grad_norm: float | None = None,
     use_amp: bool = True,
     scaler: torch.amp.GradScaler | None = None,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
 ):
     model.train()
     running = 0.0
@@ -125,6 +127,9 @@ def train_epoch(
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
             optimizer.step()
 
+        if scheduler is not None:
+            scheduler.step()
+
         loss_val = float(loss.detach().item())
         running += loss_val
         n += 1
@@ -152,8 +157,9 @@ def train_model(
     prefetch_factor: int = 2,
     pin_memory: bool | None = None,
     use_amp: bool = True,
+    min_lr_ratio: float = 0.1,
+    logger: Logger = Logger()
 ):
-    # TODO: make it parametrizable
     train_loader, train_dataset = setup_dataset(
         batch_size=batch_size,
         split_type=split_type,
@@ -197,10 +203,17 @@ def train_model(
     amp_enabled = bool(use_amp and (str(device).startswith("cuda") or str(device).startswith("xpu")))
     scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled and is_cuda_device(device))
 
-    # TODO: make it parametrizable
     optimizer = torch.optim.AdamW(trainable_params, lr=lr, weight_decay=wd)
     pos_weight = estimate_pos_weight(loader=train_loader, device=device)
     criterion = torch.nn.BCEWithLogitsLoss(reduction="none", pos_weight=pos_weight)
+
+    # Hardcoded best direction from quick ablations: cosine scheduler + BCE
+    total_steps = max(1, epochs * len(train_loader))
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=total_steps,
+        eta_min=lr * min_lr_ratio,
+    )
 
     if hasattr(model, "_adapter_head"):
         print("[train] optimizer includes _adapter_head parameters")
@@ -214,8 +227,6 @@ def train_model(
     )
 
     prev_loss = None
-    best_map = float("-inf")
-    best_epoch = 0
 
     for epoch in epoch_pbar:
         epoch_pbar.set_postfix(epoch=f"{epoch}/{epochs}", prev_loss=f"{prev_loss:.4f}" if prev_loss is not None else "n/a")
@@ -232,6 +243,7 @@ def train_model(
             max_grad_norm=max_grad_norm,
             use_amp=amp_enabled,
             scaler=scaler if scaler.is_enabled() else None,
+            scheduler=scheduler,
         )
 
         prev_loss = avg_loss
@@ -243,15 +255,8 @@ def train_model(
             loader=val_loader,
         )
 
-        current_map = float(metrics.get("map_macro", 0.0))
-        if current_map > best_map:
-            best_map = current_map
-            best_epoch = epoch
-
-        metrics["best_map_macro"] = best_map
-        metrics["best_epoch"] = best_epoch
-
-        print(metrics)
+        metadata = {"test": 5}
+        logger.log_event(metrics, metadata)
 
 
 from core.adapters import *
@@ -276,11 +281,17 @@ def main():
 
     adapter = TeSTrAAdapter()
     cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
-    train_model(adapter=adapter, cfg=cfg, epochs=20, batch_size=32, num_workers=12, prefetch_factor = 8, lr=1e-4, wd=1e-3)
-
-    adapter = TeSTrAAdapter()
-    cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
-    train_model(adapter=adapter, cfg=cfg, epochs=20, batch_size=32, num_workers=12, prefetch_factor = 8, lr=5e-5, wd=1e-3)
+    train_model(
+        adapter=adapter,
+        cfg=cfg,
+        epochs=40,
+        batch_size=32,
+        num_workers=8,
+        prefetch_factor=4,
+        lr=1e-4,
+        wd=1e-4,
+        min_lr_ratio=0.1,
+    )
 
 
 if __name__ == "__main__":
