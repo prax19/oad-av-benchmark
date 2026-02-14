@@ -37,6 +37,12 @@ Consider using `conda` or `Docker` to isolate your other projects or application
                 ...
         ```
 
+You can run [`bootstrap.sh`](bootstrap.sh) to set everything up, but it's prepared for `cu128` (make sure your CUDA driver is compatible).
+
+```bash
+bash bootstrap.sh
+```
+
 [comment]: <> (Continue with feature extraction)
 
 ## Including own elements
