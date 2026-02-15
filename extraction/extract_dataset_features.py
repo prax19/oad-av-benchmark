@@ -13,18 +13,26 @@ from utils.torch_scripts import get_device
 from extraction import extractors
 from extraction.extractor_datasets import RoadExtractionDataset
 
+
+def _split_backbone_name(backbone: str) -> tuple[str, str]:
+    parts = backbone.split("-")
+    if len(parts) <= 1:
+        return backbone, "unknown"
+    return parts[0], "-".join(parts[1:])
+
+
 def extract_dataset_features(
-    backbone = "tsn-kinetics-400",
-    dataset = RoadExtractionDataset(root='data/road', dataset_config='road_trainval_v1.0.json'),
-    device = get_device(),
-    sample_hz = 4
+    backbone="tsn-kinetics-400",
+    dataset=RoadExtractionDataset(root='data/road', dataset_config='road_trainval_v1.0.json'),
+    device=get_device(),
+    sample_hz: int = 4
 ):
     # preparing config files and directories
     cfg_path, ckpt_path = load_by_key(backbone)
-    out_dir = dataset.get_extraction_directory(backbone=backbone)
-    tgt_dir = dataset.get_target_directory(backbone=backbone)
-    ann_dir = dataset.get_annotated_directory(backbone=backbone)
-    dump_root = dataset.get_dump_directory(backbone=backbone)
+    out_dir = dataset.get_extraction_directory(backbone=backbone, sampling_rate=sample_hz)
+    tgt_dir = dataset.get_target_directory(backbone=backbone, sampling_rate=sample_hz)
+    ann_dir = dataset.get_annotated_directory(backbone=backbone, sampling_rate=sample_hz)
+    dump_root = dataset.get_dump_directory(backbone=backbone, sampling_rate=sample_hz)
 
     # model initialization
     cfg = Config.fromfile(str(cfg_path))
@@ -33,8 +41,8 @@ def extract_dataset_features(
 
     # preparing preprocessing
     dp = cfg.model.data_preprocessor
-    mean = [m/255.0 for m in dp.mean] if max(dp.mean) > 1 else list(dp.mean)
-    std  = [s/255.0 for s in dp.std]  if max(dp.std)  > 1 else list(dp.std)
+    mean = [m / 255.0 for m in dp.mean] if max(dp.mean) > 1 else list(dp.mean)
+    std = [s / 255.0 for s in dp.std] if max(dp.std) > 1 else list(dp.std)
     resize = cfg.val_dataloader.dataset.pipeline[3].scale[1]
     crop_size = cfg.val_dataloader.dataset.pipeline[4].crop_size
 
@@ -43,52 +51,55 @@ def extract_dataset_features(
     extractor: extractors.Extractor = None
     if model_type == 'Recognizer2D':
         transforms = extractors.Extractor_2D.compose_transforms(
-            mean=mean, 
+            mean=mean,
             std=std,
             resize=resize,
             center_crop=crop_size
         )
         extractor = extractors.Extractor_2D(
-            model=model, 
-            transforms=transforms, 
+            model=model,
+            transforms=transforms,
             sampling_hz=sample_hz
         )
     elif model_type == 'Recognizer3D':
         frame_interval = cfg.val_dataloader.dataset.pipeline[1].frame_interval
         clip_len = cfg.val_dataloader.dataset.pipeline[1].clip_len
         transforms = extractors.Extractor_3D.compose_transforms(
-            mean=mean, 
+            mean=mean,
             std=std,
             resize=resize,
             center_crop=crop_size
         )
         extractor = extractors.Extractor_3D(
-            model=model, 
-            transforms=transforms, 
-            sampling_hz=sample_hz, 
-            frame_interval=frame_interval, 
+            model=model,
+            transforms=transforms,
+            sampling_hz=sample_hz,
+            frame_interval=frame_interval,
             clip_len=clip_len
         )
     else:
-        raise(NotImplementedError(f'{model_type} model type not supported.'))
+        raise (NotImplementedError(f'{model_type} model type not supported.'))
+
+    backbone_name, backbone_dataset = _split_backbone_name(backbone)
 
     # Metadata config / loading
     meta_path = Path(dump_root, 'meta.yaml')
     if meta_path.exists():
         with open(meta_path, "r", encoding="utf-8") as f:
-            meta = yaml.safe_load(f)
+            meta = yaml.safe_load(f) or {}
     else:
-        meta = { # metadata template
-            "dataset": {
-                "hz": float(sample_hz),
-                "paths": {
-                    "feats_dir": str(Path(out_dir)),
-                    "targets_dir": str(Path(tgt_dir)),
-                    "annotated_dir": str(Path(ann_dir))
-                },
-                "videos": {}
-            }
-        }
+        meta = {}
+
+    # Ensure metadata schema/values exist also for previously generated meta files.
+    dataset_meta = meta.setdefault("dataset", {})
+    dataset_meta.setdefault("hz", float(sample_hz))
+    dataset_meta.setdefault("backbone", backbone_name)
+    dataset_meta.setdefault("backbone_dataset", backbone_dataset)
+    dataset_meta.setdefault("paths", {})
+    dataset_meta["paths"]["feats_dir"] = str(Path(out_dir))
+    dataset_meta["paths"]["targets_dir"] = str(Path(tgt_dir))
+    dataset_meta["paths"]["annotated_dir"] = str(Path(ann_dir))
+    dataset_meta.setdefault("videos", {})
 
     try:
         for vid, label, annotated, split in tqdm(dataset, desc='Processing dataset', leave=False):
@@ -99,8 +110,8 @@ def extract_dataset_features(
             paths = [feat_path, tgt_path, ann_path]
 
             feat_exists = feat_path.exists()
-            tgt_exists  = tgt_path.exists()
-            ann_exists  = ann_path.exists()
+            tgt_exists = tgt_path.exists()
+            ann_exists = ann_path.exists()
             meta_exists = vid.stem in meta["dataset"]["videos"]
 
             exists = [feat_exists, tgt_exists, ann_exists, meta_exists]
@@ -151,4 +162,5 @@ def extract_dataset_features(
         with open(meta_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(meta, f, sort_keys=False, allow_unicode=True)
 
-extract_dataset_features(backbone='tsn-kinetics-400')
+
+extract_dataset_features(backbone='tsn-kinetics-400', sample_hz=8)

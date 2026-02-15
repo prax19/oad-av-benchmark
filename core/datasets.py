@@ -1,4 +1,5 @@
 import json
+import re
 import warnings
 from pathlib import Path
 from typing import Literal
@@ -10,6 +11,32 @@ import yaml
 from utils.caching import _NPYCache
 
 SplitStr = Literal["all", "train", "val", "test"]
+
+
+def _infer_dataset_info(dataset_variant: str) -> dict[str, str | float | None]:
+    """Infer backbone metadata from variant name like features-tsn-kinetics-400-4hz."""
+    info: dict[str, str | float | None] = {
+        "backbone": "unknown",
+        "backbone_dataset": "unknown",
+        "hz": None,
+    }
+
+    m = re.match(r"^features-(.+)-(\d+)hz$", str(dataset_variant).strip())
+    if not m:
+        return info
+
+    backbone_full, hz_str = m.group(1), m.group(2)
+    parts = backbone_full.split("-")
+    if parts:
+        info["backbone"] = parts[0]
+        info["backbone_dataset"] = "-".join(parts[1:]) if len(parts) > 1 else "unknown"
+
+    try:
+        info["hz"] = float(hz_str)
+    except Exception:
+        info["hz"] = None
+
+    return info
 
 
 class PreExtractedDataset(data.Dataset):
@@ -63,7 +90,17 @@ class PreExtractedDataset(data.Dataset):
                 s = str(s)
                 return s.split("_", 1)[0]
 
-            metadata_vid = cfg['dataset']['videos']
+            dataset_meta = cfg.get('dataset', {})
+            inferred_info = _infer_dataset_info(dataset_variant=str(dataset_variant))
+
+            self.dataset_info = {
+                'name': self.__class__.__name__,
+                'backbone': dataset_meta.get('backbone', inferred_info['backbone']),
+                'backbone_dataset': dataset_meta.get('backbone_dataset', inferred_info['backbone_dataset']),
+                'hz': dataset_meta.get('hz', inferred_info['hz']),
+            }
+
+            metadata_vid = dataset_meta.get('videos', {})
             self.split_lut = {
                 vid: _norm_split(
                     meta.get("split_ids", [None] * (split_variant + 1))[split_variant]

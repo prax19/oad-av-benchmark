@@ -149,7 +149,7 @@ def train_model(
     split_type: str = "train",
     split_variant: int = 1,
     dataset_root: str = "data/road",
-    dataset_variant: str = "features-tsn-kinetics-400",
+    dataset_variant: str = "features-tsn-kinetics-400-4hz",
     shuffle: bool = True,
     max_grad_norm: float | None = 1.0,
     lr=5e-5,
@@ -217,6 +217,7 @@ def train_model(
     )
 
     if logger is None:
+        ds_info = getattr(train_dataset, "dataset_info", {})
         logger = Logger(
             name=f"{adapter.name}_",
             metadata={
@@ -229,11 +230,17 @@ def train_model(
                 "weight_decay": wd,
                 "scheduler": scheduler.__class__.__name__,
                 "loss": criterion.__class__.__name__,
-                "min_lr_ratio": min_lr_ratio,
-                "split_type": split_type,
-                "split_variant": split_variant,
-                "dataset_root": dataset_root,
-                "dataset_variant": dataset_variant,
+                "dataset": {
+                    "name": ds_info.get("name", train_dataset.__class__.__name__),
+                    "backbone": ds_info.get("backbone", "unknown"),
+                    "backbone_dataset": ds_info.get("backbone_dataset", "unknown"),
+                    "hz": ds_info.get("hz", None),
+                    "min_lr_ratio": min_lr_ratio,
+                    "split_type": split_type,
+                    "split_variant": split_variant,
+                    "root": dataset_root,
+                    "variant": dataset_variant,
+                },
             },
         )
 
@@ -320,27 +327,30 @@ def main():
     # train_model(adapter=adapter, cfg=cfg, epochs=1)
 
     # Sweep loop prepared for LR/WD/cosine floor experiments.
-    lr_values = [1e-4, 5e-5, 2e-4]
-    wd_values = [1e-4, 5e-4]
-    min_lr_ratio_values = [0.1, 0.05]
+    ds_variants = ['features-tsn-kinetics-400-4hz']
+    lr_values = [1e-4]
+    wd_values = [5e-4]
+    min_lr_ratio_values = [0.05]
 
     adapter = TeSTrAAdapter()
     cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
 
-    for lr in lr_values:
-        for wd in wd_values:
-            for min_lr_ratio in min_lr_ratio_values:
-                train_model(
-                    adapter=adapter,
-                    cfg=cfg,
-                    epochs=40,
-                    batch_size=32,
-                    num_workers=8,
-                    prefetch_factor=4,
-                    lr=lr,
-                    wd=wd,
-                    min_lr_ratio=min_lr_ratio,
-                )
+    for variant in ds_variants:
+        for lr in lr_values:
+            for wd in wd_values:
+                for min_lr_ratio in min_lr_ratio_values:
+                    train_model(
+                        adapter=adapter,
+                        cfg=cfg,
+                        epochs=40,
+                        batch_size=16,
+                        num_workers=8,
+                        prefetch_factor=4,
+                        lr=lr,
+                        wd=wd,
+                        min_lr_ratio=min_lr_ratio,
+                        dataset_variant=variant
+                    )
 
 
 if __name__ == "__main__":

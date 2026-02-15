@@ -3,11 +3,11 @@ from torch.utils.data import DataLoader
 import torch
 
 def setup_dataset(
-    batch_size = 32,
+    batch_size=32,
     split_type: str = "train",
     split_variant: int = 2,
     dataset_root: str = "data/road",
-    dataset_variant: str = "features-tsn-kinetics-400",
+    dataset_variant: str = "features-tsn-kinetics-400-4hz",
     shuffle: bool = True,
     num_workers: int = 8,
     prefetch_factor: int = 2,

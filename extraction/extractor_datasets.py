@@ -35,22 +35,22 @@ class RoadExtractionDataset(Dataset):
 
         return vid_path, labels, annotated, split
     
-    def get_annotated_directory(self, backbone) -> Path:
-        out_dir = self.root / f"features-{backbone}" / f"annotated_perframe"
+    def get_annotated_directory(self, backbone, sampling_rate) -> Path:
+        out_dir = self.root / f"features-{backbone}-{sampling_rate}hz" / f"annotated_perframe"
         out_dir.mkdir(parents=True, exist_ok=True)
         return out_dir
 
-    def get_extraction_directory(self, backbone: str) -> Path:
-        out_dir = self.root / f"features-{backbone}" / "rgb"
+    def get_extraction_directory(self, backbone: str, sampling_rate) -> Path:
+        out_dir = self.root / f"features-{backbone}-{sampling_rate}hz" / "rgb"
         out_dir.mkdir(parents=True, exist_ok=True)
         return out_dir
     
-    def get_target_directory(self, backbone) -> Path:
-        out_dir = self.root / f"features-{backbone}" / f"target_perframe"
+    def get_target_directory(self, backbone, sampling_rate) -> Path:
+        out_dir = self.root / f"features-{backbone}-{sampling_rate}hz" / f"target_perframe"
         out_dir.mkdir(parents=True, exist_ok=True)
         return out_dir
     
-    def get_dump_directory(self, backbone) -> Path:
-        out_dir = self.root / f"features-{backbone}"
+    def get_dump_directory(self, backbone, sampling_rate) -> Path:
+        out_dir = self.root / f"features-{backbone}-{sampling_rate}hz"
         out_dir.mkdir(parents=True, exist_ok=True)
         return out_dir
