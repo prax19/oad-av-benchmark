@@ -28,14 +28,7 @@ def _initialize_adapter_head_if_needed(model, adapter: OADMethodAdapter, loader:
         _ = adapter.normalize_logits(logits, y, model, device)
 
 
-def estimate_pos_weight(
-    loader: DataLoader,
-    device,
-    max_pos_weight: float = 8.0,
-    min_pos_weight: float = 0.5,
-    power: float = 0.5,
-) -> torch.Tensor | None:
-    """Estimate class-wise pos_weight from annotated train frames with smoothing."""
+def _collect_class_stats(loader: DataLoader, device) -> tuple[torch.Tensor | None, float]:
     pos = None
     total = 0.0
 
@@ -50,6 +43,19 @@ def estimate_pos_weight(
         pos += y_sel.sum(dim=(0, 1))
         total += float(ann.sum().item())
 
+    return pos, total
+
+
+def estimate_pos_weight(
+    loader: DataLoader,
+    device,
+    max_pos_weight: float = 24.0,
+    min_pos_weight: float = 1.0,
+    power: float = 0.75,
+) -> torch.Tensor | None:
+    """Estimate class-wise pos_weight from annotated train frames."""
+    pos, total = _collect_class_stats(loader=loader, device=device)
+
     if pos is None or total <= 0:
         return None
 
@@ -63,6 +69,78 @@ def estimate_pos_weight(
     print(f"[train] raw_pos_weight={raw.detach().cpu().tolist()}")
     print(f"[train] used_pos_weight={pw.detach().cpu().tolist()}")
     return pw
+
+
+def estimate_class_weight(
+    loader: DataLoader,
+    device,
+    max_class_weight: float = 8.0,
+    min_class_weight: float = 0.25,
+    power: float = 1.0,
+) -> torch.Tensor | None:
+    """Estimate per-class multipliers using effective-number reweighting."""
+    pos, total = _collect_class_stats(loader=loader, device=device)
+
+    if pos is None or total <= 0:
+        return None
+
+    beta = 0.999
+    effective_num = 1.0 - torch.pow(torch.full_like(pos, beta), pos.clamp_min(1.0))
+    cw = (1.0 - beta) / effective_num
+    cw = torch.pow(cw, power)
+    cw = cw / cw.mean().clamp_min(1e-6)
+    cw = torch.clamp(cw, min=min_class_weight, max=max_class_weight)
+
+    print(f"[train] class_weight={cw.detach().cpu().tolist()}")
+    return cw
+
+
+def estimate_positive_class_weight(
+    loader: DataLoader,
+    device,
+    max_class_weight: float = 20.0,
+    min_class_weight: float = 0.2,
+    power: float = 1.0,
+) -> torch.Tensor | None:
+    """Estimate positive-label multipliers to favor rare classes."""
+    pos, total = _collect_class_stats(loader=loader, device=device)
+
+    if pos is None or total <= 0:
+        return None
+
+    eps = 1.0
+    inv = (total + eps) / (pos + eps)
+    pos_w = torch.pow(inv, power)
+    pos_w = pos_w / pos_w.mean().clamp_min(1e-6)
+    pos_w = torch.clamp(pos_w, min=min_class_weight, max=max_class_weight)
+
+    print(f"[train] positive_class_weight={pos_w.detach().cpu().tolist()}")
+    return pos_w
+
+
+def estimate_negative_class_weight(
+    loader: DataLoader,
+    device,
+    min_class_weight: float = 0.02,
+    max_class_weight: float = 1.0,
+    power: float = 0.5,
+) -> torch.Tensor | None:
+    """
+    Downweight negative terms for ultra-rare classes.
+    For rare class prior p, weight ~ p^power -> tiny negatives, preventing collapse-to-all-negative.
+    """
+    pos, total = _collect_class_stats(loader=loader, device=device)
+
+    if pos is None or total <= 0:
+        return None
+
+    eps = 1.0
+    prior = (pos + eps) / (total + eps)
+    neg_w = torch.pow(prior, power)
+    neg_w = torch.clamp(neg_w, min=min_class_weight, max=max_class_weight)
+
+    print(f"[train] negative_class_weight={neg_w.detach().cpu().tolist()}")
+    return neg_w
 
 
 def _set_finetune_mode(model: torch.nn.Module) -> None:
@@ -85,6 +163,11 @@ def train_epoch(
     use_amp: bool = True,
     scaler: torch.amp.GradScaler | None = None,
     scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
+    class_weight: torch.Tensor | None = None,
+    positive_class_weight: torch.Tensor | None = None,
+    negative_class_weight: torch.Tensor | None = None,
+    focal_gamma_pos: float = 1.0,
+    focal_gamma_neg: float = 4.0,
 ):
     model.train()
     running = 0.0
@@ -109,25 +192,58 @@ def train_epoch(
             logits = adapter.normalize_logits(logits, y, model, device)
 
             loss_raw = criterion(logits, y)
+
+            # Asymmetric focal modulation: suppress easy negatives, keep positives stronger.
+            probs = torch.sigmoid(logits)
+            pt = torch.where(y > 0.5, probs, 1.0 - probs)
+            gamma = torch.where(
+                y > 0.5,
+                torch.full_like(pt, focal_gamma_pos),
+                torch.full_like(pt, focal_gamma_neg),
+            )
+            focal_factor = torch.pow((1.0 - pt).clamp_min(1e-6), gamma)
+            loss_raw = loss_raw * focal_factor
+
+            if class_weight is not None:
+                loss_raw = loss_raw * class_weight.view(1, 1, -1)
+
+            pos_mask = (y > 0.5).to(loss_raw.dtype)
+            neg_mask = 1.0 - pos_mask
+
+            if positive_class_weight is not None:
+                pos_scale = positive_class_weight.view(1, 1, -1)
+                loss_raw = loss_raw * (1.0 + pos_mask * (pos_scale - 1.0))
+
+            if negative_class_weight is not None:
+                neg_scale = negative_class_weight.view(1, 1, -1)
+                loss_raw = (loss_raw * pos_mask) + (loss_raw * neg_mask * neg_scale)
+
             frame_loss = loss_raw.mean(dim=-1)
             mask = ann.to(frame_loss.dtype)
             denom = mask.sum().clamp_min(1.0)
             loss = (frame_loss * mask).sum() / denom
 
+        optimizer_step_done = False
         if scaler is not None:
             scaler.scale(loss).backward()
             if max_grad_norm is not None and max_grad_norm > 0:
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+
+            prev_scale = scaler.get_scale()
             scaler.step(optimizer)
             scaler.update()
+            new_scale = scaler.get_scale()
+            # If scale decreased, optimizer.step() was skipped due to inf/nan gradients.
+            optimizer_step_done = new_scale >= prev_scale
         else:
             loss.backward()
             if max_grad_norm is not None and max_grad_norm > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
             optimizer.step()
+            optimizer_step_done = True
 
-        if scheduler is not None:
+        if scheduler is not None and optimizer_step_done:
             scheduler.step()
 
         loss_val = float(loss.detach().item())
@@ -143,6 +259,7 @@ def train_epoch(
 def train_model(
     adapter: OADMethodAdapter,
     cfg: dict,
+    name: str | None = None,
     device=get_device(),
     epochs=5,
     batch_size: int = 16,
@@ -159,6 +276,24 @@ def train_model(
     pin_memory: bool | None = None,
     use_amp: bool = True,
     min_lr_ratio: float = 0.1,
+    pos_weight_power: float = 0.75,
+    pos_weight_min: float = 1.0,
+    pos_weight_max: float = 24.0,
+    class_weight_power: float = 1.0,
+    class_weight_min: float = 0.25,
+    class_weight_max: float = 8.0,
+    positive_class_weight_power: float = 1.0,
+    positive_class_weight_min: float = 0.2,
+    positive_class_weight_max: float = 20.0,
+    negative_class_weight_power: float = 0.5,
+    negative_class_weight_min: float = 0.02,
+    negative_class_weight_max: float = 1.0,
+    focal_gamma_pos: float = 1.0,
+    focal_gamma_neg: float = 4.0,
+    use_weighted_sampler: bool = True,
+    weighted_sampler_rarity_power: float = 1.2,
+    weighted_sampler_min_weight: float = 1.0,
+    weighted_sampler_max_weight: float = 30.0,
     logger: Logger | None = None,
 ):
     train_loader, train_dataset = setup_dataset(
@@ -171,6 +306,10 @@ def train_model(
         num_workers=num_workers,
         prefetch_factor=prefetch_factor,
         pin_memory=pin_memory,
+        use_weighted_sampler=use_weighted_sampler,
+        weighted_sampler_rarity_power=weighted_sampler_rarity_power,
+        weighted_sampler_min_weight=weighted_sampler_min_weight,
+        weighted_sampler_max_weight=weighted_sampler_max_weight,
     )
 
     val_loader, _ = setup_dataset(
@@ -183,6 +322,7 @@ def train_model(
         num_workers=num_workers,
         prefetch_factor=prefetch_factor,
         pin_memory=pin_memory,
+        use_weighted_sampler=False,
     )
 
     model = adapter.build_model(
@@ -205,7 +345,34 @@ def train_model(
     scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled and is_cuda_device(device))
 
     optimizer = torch.optim.AdamW(trainable_params, lr=lr, weight_decay=wd)
-    pos_weight = estimate_pos_weight(loader=train_loader, device=device)
+    pos_weight = estimate_pos_weight(
+        loader=train_loader,
+        device=device,
+        power=pos_weight_power,
+        min_pos_weight=pos_weight_min,
+        max_pos_weight=pos_weight_max,
+    )
+    class_weight = estimate_class_weight(
+        loader=train_loader,
+        device=device,
+        power=class_weight_power,
+        min_class_weight=class_weight_min,
+        max_class_weight=class_weight_max,
+    )
+    positive_class_weight = estimate_positive_class_weight(
+        loader=train_loader,
+        device=device,
+        power=positive_class_weight_power,
+        min_class_weight=positive_class_weight_min,
+        max_class_weight=positive_class_weight_max,
+    )
+    negative_class_weight = estimate_negative_class_weight(
+        loader=train_loader,
+        device=device,
+        power=negative_class_weight_power,
+        min_class_weight=negative_class_weight_min,
+        max_class_weight=negative_class_weight_max,
+    )
     criterion = torch.nn.BCEWithLogitsLoss(reduction="none", pos_weight=pos_weight)
 
     # Hardcoded best direction from quick ablations: cosine scheduler + BCE
@@ -217,9 +384,10 @@ def train_model(
     )
 
     if logger is None:
+        run_name = name if name is not None else f"{adapter.name}_"
         ds_info = getattr(train_dataset, "dataset_info", {})
         logger = Logger(
-            name=f"{adapter.name}_",
+            name=run_name,
             metadata={
                 "method": adapter.name,
                 "epochs": epochs,
@@ -230,6 +398,27 @@ def train_model(
                 "weight_decay": wd,
                 "scheduler": scheduler.__class__.__name__,
                 "loss": criterion.__class__.__name__,
+                "weight_calibration": {
+                    "pos_weight": {"power": pos_weight_power, "min": pos_weight_min, "max": pos_weight_max},
+                    "class_weight": {"power": class_weight_power, "min": class_weight_min, "max": class_weight_max},
+                    "positive_class_weight": {
+                        "power": positive_class_weight_power,
+                        "min": positive_class_weight_min,
+                        "max": positive_class_weight_max,
+                    },
+                    "negative_class_weight": {
+                        "power": negative_class_weight_power,
+                        "min": negative_class_weight_min,
+                        "max": negative_class_weight_max,
+                    },
+                    "focal": {"gamma_pos": focal_gamma_pos, "gamma_neg": focal_gamma_neg},
+                    "sampler": {
+                        "use_weighted_sampler": use_weighted_sampler,
+                        "rarity_power": weighted_sampler_rarity_power,
+                        "min_weight": weighted_sampler_min_weight,
+                        "max_weight": weighted_sampler_max_weight,
+                    },
+                },
                 "dataset": {
                     "name": ds_info.get("name", train_dataset.__class__.__name__),
                     "backbone": ds_info.get("backbone", "unknown"),
@@ -240,6 +429,7 @@ def train_model(
                     "split_variant": split_variant,
                     "root": dataset_root,
                     "variant": dataset_variant,
+                    "class_names": getattr(train_dataset, "class_names", {}),
                 },
             },
         )
@@ -259,55 +449,75 @@ def train_model(
     prev_val_loss: float | None = None
     prev_map_macro: float | None = None
     steps = 0
+    best_map_macro = float("-inf")
+    best_epoch = 0
+    final_metrics: dict = {}
 
-    for epoch in epoch_pbar:
-        # epoch tqdm: only previous train loss, val loss and macro mAP
-        epoch_pbar.set_postfix(
-            prev_train_loss=f"{prev_train_loss:.4f}" if prev_train_loss is not None else "n/a",
-            prev_val_loss=f"{prev_val_loss:.4f}" if prev_val_loss is not None else "n/a",
-            prev_map_macro=f"{prev_map_macro:.4f}" if prev_map_macro is not None else "n/a",
-        )
+    try:
+        for epoch in epoch_pbar:
+            # epoch tqdm: only previous train loss, val loss and macro mAP
+            epoch_pbar.set_postfix(
+                prev_train_loss=f"{prev_train_loss:.4f}" if prev_train_loss is not None else "n/a",
+                prev_val_loss=f"{prev_val_loss:.4f}" if prev_val_loss is not None else "n/a",
+                prev_map_macro=f"{prev_map_macro:.4f}" if prev_map_macro is not None else "n/a",
+            )
 
-        avg_train_loss, epoch_steps = train_epoch(
-            model=model,
-            adapter=adapter,
-            loader=train_loader,
-            optimizer=optimizer,
-            criterion=criterion,
-            device=device,
-            epoch=epoch,
-            epochs=epochs,
-            max_grad_norm=max_grad_norm,
-            use_amp=amp_enabled,
-            scaler=scaler if scaler.is_enabled() else None,
-            scheduler=scheduler,
-        )
-        steps += epoch_steps
+            avg_train_loss, epoch_steps = train_epoch(
+                model=model,
+                adapter=adapter,
+                loader=train_loader,
+                optimizer=optimizer,
+                criterion=criterion,
+                device=device,
+                epoch=epoch,
+                epochs=epochs,
+                max_grad_norm=max_grad_norm,
+                use_amp=amp_enabled,
+                scaler=scaler if scaler.is_enabled() else None,
+                scheduler=scheduler,
+                class_weight=class_weight,
+                positive_class_weight=positive_class_weight,
+                negative_class_weight=negative_class_weight,
+                focal_gamma_pos=focal_gamma_pos,
+                focal_gamma_neg=focal_gamma_neg,
+            )
+            steps += epoch_steps
 
-        metrics = evaluate_model(
-            adapter=adapter,
-            model=model,
-            loader=val_loader,
-        )
+            metrics = evaluate_model(
+                adapter=adapter,
+                model=model,
+                loader=val_loader,
+            )
 
-        avg_val_loss = float(metrics.get("bce_loss", 0.0))
-        map_macro = float(metrics.get("map_macro", 0.0))
+            avg_val_loss = float(metrics.get("bce_loss", 0.0))
+            map_macro = float(metrics.get("map_macro", 0.0))
 
-        metadata = {
-            "epoch": epoch,
-            "steps": steps,
-            "lr": float(optimizer.param_groups[0]["lr"]),
-            "train_loss": float(avg_train_loss),
-            "val_loss": avg_val_loss,
-        }
-        logger.log_event(metrics, metadata)
+            metadata = {
+                "epoch": epoch,
+                "steps": steps,
+                "lr": float(optimizer.param_groups[0]["lr"]),
+                "train_loss": float(avg_train_loss),
+                "val_loss": avg_val_loss,
+            }
+            logger.log_event(metrics, metadata)
 
-        prev_train_loss = float(avg_train_loss)
-        prev_val_loss = avg_val_loss
-        prev_map_macro = map_macro
+            current_map = float(metrics.get("map_macro", 0.0))
+            if current_map > best_map_macro:
+                best_map_macro = current_map
+                best_epoch = epoch
 
-    # Format raw NDJSON to YAML and cleanup raw on successful sanity-check.
-    logger.finalize()
+            final_metrics = metrics
+            prev_train_loss = float(avg_train_loss)
+            prev_val_loss = avg_val_loss
+            prev_map_macro = map_macro
+    finally:
+        logger.finalize()
+
+    return {
+        "best_map_macro": best_map_macro if best_map_macro > float("-inf") else 0.0,
+        "best_epoch": best_epoch,
+        "final_metrics": final_metrics,
+    }
 
 
 from core.adapters import *
@@ -342,14 +552,14 @@ def main():
                     train_model(
                         adapter=adapter,
                         cfg=cfg,
-                        epochs=40,
-                        batch_size=16,
+                        epochs=20,
+                        batch_size=64,
                         num_workers=8,
                         prefetch_factor=4,
                         lr=lr,
                         wd=wd,
                         min_lr_ratio=min_lr_ratio,
-                        dataset_variant=variant
+                        dataset_variant=variant,
                     )
 
 

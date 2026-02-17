@@ -137,25 +137,112 @@ class PreExtractedDataset(data.Dataset):
         if ignored_clips != 0:
             warnings.warn(f'Ignored {ignored_clips} clip(s) containing {ignored_frames} frames.', RuntimeWarning)
 
+    @staticmethod
+    def _is_synthetic_class_names(names: dict[int, str]) -> bool:
+        if not names:
+            return True
+        for k, v in names.items():
+            if str(v) != f"class_{k}":
+                return False
+        return True
+
     def _load_class_names(self) -> dict[int, str]:
+        # 1) Prefer class names persisted with extracted features metadata.
+        meta_path = self.sessions_dir / "meta.yaml"
+        if meta_path.exists():
+            try:
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    meta_cfg = yaml.safe_load(f) or {}
+                meta_labels = meta_cfg.get("dataset", {}).get("class_names")
+
+                if isinstance(meta_labels, list) and meta_labels:
+                    if all(isinstance(x, str) for x in meta_labels):
+                        parsed = {i: str(name) for i, name in enumerate(meta_labels)}
+                        if not self._is_synthetic_class_names(parsed):
+                            return parsed
+
+                if isinstance(meta_labels, dict) and meta_labels:
+                    out: dict[int, str] = {}
+                    for k, v in meta_labels.items():
+                        try:
+                            idx = int(k)
+                        except Exception:
+                            continue
+                        out[idx] = str(v)
+                    if out:
+                        parsed = {k: out[k] for k in sorted(out.keys())}
+                        if not self._is_synthetic_class_names(parsed):
+                            return parsed
+            except Exception:
+                pass
+
+        # 2) Fall back to dataset jsons from multiple likely locations.
         candidates = [
             self.dataset_root / "road_trainval_v1.0.json",
             self.dataset_root / "road_waymo_trainval_v1.0.json",
         ]
+        candidates.extend(sorted(self.dataset_root.glob("*trainval*.json")))
 
+        def _labels_from_config(cfg: dict) -> dict[int, str]:
+            labels = cfg.get("av_action_labels")
+
+            # Format A: ["name0", "name1", ...]
+            if isinstance(labels, list) and labels:
+                if all(isinstance(x, str) for x in labels):
+                    return {i: str(name) for i, name in enumerate(labels)}
+
+                # Format B: [{"id": 0, "name": "..."}, ...]
+                if all(isinstance(x, dict) for x in labels):
+                    out: dict[int, str] = {}
+                    for i, item in enumerate(labels):
+                        idx = item.get("id", i)
+                        name = item.get("name", item.get("label", f"class_{idx}"))
+                        try:
+                            out[int(idx)] = str(name)
+                        except Exception:
+                            continue
+                    if out:
+                        return {k: out[k] for k in sorted(out.keys())}
+
+            # Format C: {"0": "name", "1": "name", ...} or nested values.
+            if isinstance(labels, dict) and labels:
+                out: dict[int, str] = {}
+                for k, v in labels.items():
+                    try:
+                        idx = int(k)
+                    except Exception:
+                        continue
+
+                    if isinstance(v, str):
+                        out[idx] = v
+                    elif isinstance(v, dict):
+                        out[idx] = str(v.get("name", v.get("label", f"class_{idx}")))
+                    else:
+                        out[idx] = f"class_{idx}"
+
+                if out:
+                    return {k: out[k] for k in sorted(out.keys())}
+
+            return {}
+
+        seen: set[Path] = set()
         for cfg_path in candidates:
+            cfg_path = cfg_path.resolve()
+            if cfg_path in seen:
+                continue
+            seen.add(cfg_path)
             if not cfg_path.exists():
                 continue
             try:
                 with open(cfg_path, "r", encoding="utf-8") as f:
                     cfg = json.load(f)
-                labels = cfg.get("av_action_labels")
-                if isinstance(labels, list) and labels:
-                    return {i: str(name) for i, name in enumerate(labels)}
+                parsed = _labels_from_config(cfg)
+                if parsed:
+                    return parsed
             except Exception:
                 continue
 
-        # Fallback: infer class count from targets and create synthetic names.
+        # 3) Final fallback: infer class count from targets and create synthetic names.
         tgt_files = sorted((self.sessions_dir / "target_perframe").glob("*.npy"))
         if tgt_files:
             try:
@@ -168,6 +255,66 @@ class PreExtractedDataset(data.Dataset):
                 pass
 
         return {}
+
+    def build_sample_weights(
+        self,
+        rarity_power: float = 1.0,
+        min_weight: float = 1.0,
+        max_weight: float = 25.0,
+    ) -> torch.DoubleTensor:
+        """
+        Build per-sample weights for WeightedRandomSampler by upweighting windows
+        that contain rare positive classes.
+        """
+        import numpy as np
+
+        if len(self.samples) == 0:
+            return torch.ones((0,), dtype=torch.double)
+
+        class_pos = None
+        sample_presence: list[np.ndarray] = []
+
+        for _, y_path, a_path, has_ann_file, start in self.samples:
+            y_full = self._npz_cache.get(y_path)
+            end = start + self.long + self.work
+            y = y_full[end - self.work:end]
+
+            if has_ann_file:
+                a_full = self._npz_cache.get(a_path)
+                ann = a_full[end - self.work:end].astype(bool)
+                if ann.ndim == 1:
+                    valid = ann
+                else:
+                    valid = ann.reshape(-1).astype(bool)
+            else:
+                valid = np.ones((y.shape[0],), dtype=bool)
+
+            if valid.any():
+                y_valid = y[valid]
+                present = (y_valid.max(axis=0) > 0).astype(np.float32)
+            else:
+                present = np.zeros((y.shape[-1],), dtype=np.float32)
+
+            sample_presence.append(present)
+            if class_pos is None:
+                class_pos = present.copy()
+            else:
+                class_pos += present
+
+        assert class_pos is not None
+        n_samples = float(len(sample_presence))
+        inv = np.power((n_samples + 1.0) / (class_pos + 1.0), rarity_power)
+
+        weights = []
+        for present in sample_presence:
+            if present.sum() <= 0:
+                w = 1.0
+            else:
+                w = 1.0 + float((inv * present).sum())
+            w = max(min_weight, min(max_weight, w))
+            weights.append(w)
+
+        return torch.tensor(weights, dtype=torch.double)
 
     def __getitem__(self, index):
         session_x_pth, session_y_pth, session_a_pth, has_ann_file, start = self.samples[index]
@@ -184,7 +331,10 @@ class PreExtractedDataset(data.Dataset):
             ann = None
 
         ann_t = torch.from_numpy(ann).bool() if ann is not None else torch.ones((self.work,), dtype=torch.bool)
-        return torch.from_numpy(x).float(), torch.from_numpy(y).float(), ann_t
+        # Arrays loaded with mmap_mode="r" may be non-writable; copy to avoid UB warning in torch.from_numpy.
+        x_t = torch.from_numpy(x.copy()).float()
+        y_t = torch.from_numpy(y.copy()).float()
+        return x_t, y_t, ann_t
 
     def __len__(self):
         return len(self.samples)
