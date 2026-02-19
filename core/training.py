@@ -28,6 +28,28 @@ def _initialize_adapter_head_if_needed(model, adapter: OADMethodAdapter, loader:
         _ = adapter.normalize_logits(logits, y, model, device)
 
 
+def _cfg_get(cfg, path: str, default=None):
+    node = cfg
+    for part in path.split("."):
+        if node is None:
+            return default
+        if isinstance(node, dict):
+            node = node.get(part)
+        else:
+            node = getattr(node, part, None)
+    return default if node is None else node
+
+
+def _extract_model_timing(cfg) -> dict[str, float | int | None]:
+    return {
+        "fps": _cfg_get(cfg, "DATA.FPS"),
+        "long_memory_seconds": _cfg_get(cfg, "MODEL.LSTR.LONG_MEMORY_SECONDS"),
+        "long_memory_sample_rate": _cfg_get(cfg, "MODEL.LSTR.LONG_MEMORY_SAMPLE_RATE"),
+        "work_memory_seconds": _cfg_get(cfg, "MODEL.LSTR.WORK_MEMORY_SECONDS"),
+        "work_memory_sample_rate": _cfg_get(cfg, "MODEL.LSTR.WORK_MEMORY_SAMPLE_RATE"),
+    }
+
+
 def _collect_class_stats(loader: DataLoader, device) -> tuple[torch.Tensor | None, float]:
     pos = None
     total = 0.0
@@ -263,10 +285,12 @@ def train_model(
     device=get_device(),
     epochs=5,
     batch_size: int = 16,
-    split_type: str = "train",
     split_variant: int = 1,
     dataset_root: str = "data/road",
     dataset_variant: str = "features-tsn-kinetics-400-4hz",
+    dataset_long: int = 512,
+    dataset_work: int = 8,
+    dataset_stride: int = 4,
     shuffle: bool = True,
     max_grad_norm: float | None = 1.0,
     lr=5e-5,
@@ -296,12 +320,39 @@ def train_model(
     weighted_sampler_max_weight: float = 30.0,
     logger: Logger | None = None,
 ):
+    if dataset_long < 1 or dataset_work < 1 or dataset_stride < 1:
+        raise ValueError(
+            "Invalid dataset window params: "
+            f"dataset_long={dataset_long}, dataset_work={dataset_work}, dataset_stride={dataset_stride}. "
+            "All must be >= 1."
+        )
+
+    # If adapter exposes recommended windowing derived from model temporal config,
+    # use it when caller left defaults unchanged.
+    default_window = (dataset_long, dataset_work, dataset_stride) == (512, 8, 4)
+    if default_window and hasattr(adapter, "recommend_dataset_window"):
+        try:
+            rec = adapter.recommend_dataset_window()
+        except Exception:
+            rec = None
+        if isinstance(rec, dict):
+            dataset_long = int(rec.get("dataset_long", dataset_long))
+            dataset_work = int(rec.get("dataset_work", dataset_work))
+            dataset_stride = int(rec.get("dataset_stride", dataset_stride))
+            print(
+                "[train] using adapter-recommended window params: "
+                f"long={dataset_long}, work={dataset_work}, stride={dataset_stride}"
+            )
+
     train_loader, train_dataset = setup_dataset(
         batch_size=batch_size,
-        split_type=split_type,
+        split_type="train",
         split_variant=split_variant,
         dataset_root=dataset_root,
         dataset_variant=dataset_variant,
+        long=dataset_long,
+        work=dataset_work,
+        stride=dataset_stride,
         shuffle=shuffle,
         num_workers=num_workers,
         prefetch_factor=prefetch_factor,
@@ -312,12 +363,15 @@ def train_model(
         weighted_sampler_max_weight=weighted_sampler_max_weight,
     )
 
-    val_loader, _ = setup_dataset(
+    val_loader, val_dataset = setup_dataset(
         batch_size=batch_size,
         split_type="val",
         split_variant=split_variant,
         dataset_root=dataset_root,
         dataset_variant=dataset_variant,
+        long=dataset_long,
+        work=dataset_work,
+        stride=dataset_stride,
         shuffle=False,
         num_workers=num_workers,
         prefetch_factor=prefetch_factor,
@@ -325,13 +379,28 @@ def train_model(
         use_weighted_sampler=False,
     )
 
+    sample_x, sample_y, _ = train_dataset[0]
+    if sample_x.ndim < 2 or sample_y.ndim < 2 or sample_x.shape[0] < 1 or sample_y.shape[0] < 1:
+        raise ValueError(
+            "Invalid sample temporal dimensions from dataset: "
+            f"x.shape={tuple(sample_x.shape)}, y.shape={tuple(sample_y.shape)}. "
+            "Check dataset_long/dataset_work/dataset_stride and extracted feature files."
+        )
+
     model = adapter.build_model(
         cfg=cfg,
         num_classes=train_dataset[0][1].shape[-1],
         device=device,
     )
 
-    _initialize_adapter_head_if_needed(model=model, adapter=adapter, loader=train_loader, device=device)
+    try:
+        _initialize_adapter_head_if_needed(model=model, adapter=adapter, loader=train_loader, device=device)
+    except RuntimeError as exc:
+        raise RuntimeError(
+            "Adapter/model warmup forward failed. This often means a mismatch between model config and "
+            "dataset window sizes. Ensure dataset_work > 0 and that model cfg temporal settings match "
+            f"dataset_long={dataset_long}, dataset_work={dataset_work}. Original error: {exc}"
+        ) from exc
 
     if is_cuda_device(device):
         torch.backends.cudnn.benchmark = True
@@ -345,29 +414,49 @@ def train_model(
     scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled and is_cuda_device(device))
 
     optimizer = torch.optim.AdamW(trainable_params, lr=lr, weight_decay=wd)
+
+    # Compute class-imbalance statistics on the natural train distribution
+    # (no weighted sampler, no shuffle) to avoid feeding sampler-induced priors
+    # back into class-weight estimation.
+    stats_loader, _ = setup_dataset(
+        batch_size=batch_size,
+        split_type="train",
+        split_variant=split_variant,
+        dataset_root=dataset_root,
+        dataset_variant=dataset_variant,
+        long=dataset_long,
+        work=dataset_work,
+        stride=dataset_stride,
+        shuffle=False,
+        num_workers=num_workers,
+        prefetch_factor=prefetch_factor,
+        pin_memory=pin_memory,
+        use_weighted_sampler=False,
+    )
+
     pos_weight = estimate_pos_weight(
-        loader=train_loader,
+        loader=stats_loader,
         device=device,
         power=pos_weight_power,
         min_pos_weight=pos_weight_min,
         max_pos_weight=pos_weight_max,
     )
     class_weight = estimate_class_weight(
-        loader=train_loader,
+        loader=stats_loader,
         device=device,
         power=class_weight_power,
         min_class_weight=class_weight_min,
         max_class_weight=class_weight_max,
     )
     positive_class_weight = estimate_positive_class_weight(
-        loader=train_loader,
+        loader=stats_loader,
         device=device,
         power=positive_class_weight_power,
         min_class_weight=positive_class_weight_min,
         max_class_weight=positive_class_weight_max,
     )
     negative_class_weight = estimate_negative_class_weight(
-        loader=train_loader,
+        loader=stats_loader,
         device=device,
         power=negative_class_weight_power,
         min_class_weight=negative_class_weight_min,
@@ -386,6 +475,7 @@ def train_model(
     if logger is None:
         run_name = name if name is not None else f"{adapter.name}_"
         ds_info = getattr(train_dataset, "dataset_info", {})
+        model_timing = _extract_model_timing(cfg)
         logger = Logger(
             name=run_name,
             metadata={
@@ -425,11 +515,20 @@ def train_model(
                     "backbone_dataset": ds_info.get("backbone_dataset", "unknown"),
                     "hz": ds_info.get("hz", None),
                     "min_lr_ratio": min_lr_ratio,
-                    "split_type": split_type,
                     "split_variant": split_variant,
                     "root": dataset_root,
                     "variant": dataset_variant,
                     "class_names": getattr(train_dataset, "class_names", {}),
+                    "window": {
+                        "dataset_long": dataset_long,
+                        "dataset_work": dataset_work,
+                        "dataset_stride": dataset_stride,
+                    },
+                    "model_timing": model_timing,
+                    "clips_ignored_train": train_dataset.ignored_clips,
+                    "frames_ignored_train": train_dataset.ignored_frames,
+                    "clips_ignored_val": val_dataset.ignored_clips,
+                    "frames_ignored_val": val_dataset.ignored_frames
                 },
             },
         )
@@ -537,30 +636,69 @@ def main():
     # train_model(adapter=adapter, cfg=cfg, epochs=1)
 
     # Sweep loop prepared for LR/WD/cosine floor experiments.
-    ds_variants = ['features-tsn-kinetics-400-4hz']
+    ds_variants = ['features-tsn-kinetics-400-8hz']
     lr_values = [1e-4]
     wd_values = [5e-4]
     min_lr_ratio_values = [0.05]
 
-    adapter = TeSTrAAdapter()
-    cfg = adapter.get_cfg(adapter.default_cfg, opts=["DATA.DATA_INFO", str(adapter.default_data_info)])
+    ds_memory_seconds = [96, 128, 160]
+    ds_memory_sample_rate = [12, 16]
+    ds_work_seconds = [2, 4, 8]
+    ds_work_sample_rate = [1, 2, 4]
+    fps = 8
 
-    for variant in ds_variants:
-        for lr in lr_values:
-            for wd in wd_values:
-                for min_lr_ratio in min_lr_ratio_values:
-                    train_model(
-                        adapter=adapter,
-                        cfg=cfg,
-                        epochs=20,
-                        batch_size=64,
-                        num_workers=8,
-                        prefetch_factor=4,
-                        lr=lr,
-                        wd=wd,
-                        min_lr_ratio=min_lr_ratio,
-                        dataset_variant=variant,
+    for long_mem in ds_memory_seconds:
+        for long_sample_rate in ds_memory_sample_rate:
+            for work_mem in ds_work_seconds:
+                for work_sample_rate in ds_work_sample_rate:
+                    long_memory_length = long_mem * fps
+                    work_memory_length = work_mem * fps
+                    if (long_memory_length % long_sample_rate) != 0:
+                        print(
+                            "[sweep] skip invalid config: "
+                            f"LONG_MEMORY_LENGTH={long_memory_length} not divisible by "
+                            f"LONG_MEMORY_SAMPLE_RATE={long_sample_rate}"
+                        )
+                        continue
+                    if (work_memory_length % work_sample_rate) != 0:
+                        print(
+                            "[sweep] skip invalid config: "
+                            f"WORK_MEMORY_LENGTH={work_memory_length} not divisible by "
+                            f"WORK_MEMORY_SAMPLE_RATE={work_sample_rate}"
+                        )
+                        continue
+
+                    adapter = TeSTrAAdapter(
+                        fps=fps,
+                        long_memory_seconds=long_mem,
+                        long_memory_sample_rate=long_sample_rate,
+                        work_memory_seconds=work_mem,
+                        work_memory_sample_rate=work_sample_rate,
                     )
+                    cfg = adapter.get_cfg(
+                        adapter.default_cfg,
+                        opts=[
+                            "DATA.DATA_INFO", str(adapter.default_data_info.resolve()),
+                        ],
+                    )
+
+                    for variant in ds_variants:
+                        for lr in lr_values:
+                            for wd in wd_values:
+                                for min_lr_ratio in min_lr_ratio_values:
+                                    train_model(
+                                        adapter=adapter,
+                                        cfg=cfg,
+                                        epochs=20,
+                                        batch_size=16,
+                                        num_workers=8,
+                                        prefetch_factor=4,
+                                        lr=lr,
+                                        wd=wd,
+                                        min_lr_ratio=min_lr_ratio,
+                                        dataset_variant=variant,
+                                        dataset_root="data/road"
+                                    )
 
 
 if __name__ == "__main__":

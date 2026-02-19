@@ -6,7 +6,6 @@ from utils.torch_scripts import get_device
 from core.pkg_scope import use_method_src
 from utils.model_scripts import patch_lstr_3072_to_2048, unwrap_logits
 
-from yacs.config import CfgNode as CN
 from typing import Protocol, Any, Dict
 from pathlib import Path
 import inspect
@@ -22,6 +21,12 @@ class LSTRAdapter(OADMethodAdapter, Protocol):
         self,
         repo_root: Path = Path(__file__).resolve().parents[1]
     ): ...
+
+    def _default_cfg_opts(self) -> list[str]:
+        return list(getattr(self, "cfg_default_opts", []))
+
+    def recommend_dataset_window(self) -> dict[str, int] | None:
+        return None
 
     def build_model(self, cfg, num_classes, device) -> torch.nn.Module:
         with use_method_src(self.module_src):
@@ -51,10 +56,15 @@ class LSTRAdapter(OADMethodAdapter, Protocol):
             cfg = get_cfg()
             cfg.set_new_allowed(True)
             cfg.merge_from_file(str(cfg_file))
-            if opts:
-                cfg.merge_from_list(opts)
 
-            args = SimpleNamespace(config_file=str(cfg_file), gpu=gpu, opts=opts or [])
+            merged_opts: list[str] = []
+            merged_opts.extend(self._default_cfg_opts())
+            if opts:
+                merged_opts.extend(opts)
+            if merged_opts:
+                cfg.merge_from_list(merged_opts)
+
+            args = SimpleNamespace(config_file=str(cfg_file), gpu=gpu, opts=merged_opts)
             assert_and_infer_cfg(cfg, args)
             return cfg
         
@@ -112,12 +122,66 @@ class TeSTrAAdapter(LSTRAdapter):
 
     def __init__(
         self,
-        repo_root: Path = Path(__file__).resolve().parents[1]
+        repo_root: Path = Path(__file__).resolve().parents[1],
+        fps: int = 8,
+        long_memory_seconds: int = 16,
+        long_memory_sample_rate: int = 1,
+        work_memory_seconds: int = 2,
+        work_memory_sample_rate: int = 4,
     ):
         self.method_root = repo_root / "methods" / "TeSTrA"
         self.module_src = self.method_root / 'src'
         self.default_cfg = self.method_root / "configs" / "THUMOS" / "TESTRA" / "testra_lite_long_512_work_8_kinetics_1x_box.yaml"
         self.default_data_info = self.method_root / "data" / "data_info.json"
+
+        def _as_positive_int(name: str, value: Any) -> int:
+            try:
+                f = float(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{self.name}: {name} must be a positive integer, got {value!r}") from exc
+
+            if not f.is_integer() or int(f) <= 0:
+                raise ValueError(f"{self.name}: {name} must be a positive integer, got {value!r}")
+            return int(f)
+
+        self.fps = _as_positive_int("fps", fps)
+        self.long_memory_seconds = _as_positive_int("long_memory_seconds", long_memory_seconds)
+        self.long_memory_sample_rate = _as_positive_int("long_memory_sample_rate", long_memory_sample_rate)
+        self.work_memory_seconds = _as_positive_int("work_memory_seconds", work_memory_seconds)
+        self.work_memory_sample_rate = _as_positive_int("work_memory_sample_rate", work_memory_sample_rate)
+
+        long_memory_length = self.long_memory_seconds * self.fps
+        if long_memory_length % self.long_memory_sample_rate != 0:
+            raise ValueError(
+                f"{self.name}: invalid long-memory timing: "
+                f"LONG_MEMORY_LENGTH={long_memory_length} (seconds={self.long_memory_seconds}, fps={self.fps}) "
+                f"is not divisible by LONG_MEMORY_SAMPLE_RATE={self.long_memory_sample_rate}."
+            )
+
+        work_memory_length = self.work_memory_seconds * self.fps
+        if work_memory_length % self.work_memory_sample_rate != 0:
+            raise ValueError(
+                f"{self.name}: invalid work-memory timing: "
+                f"WORK_MEMORY_LENGTH={work_memory_length} (seconds={self.work_memory_seconds}, fps={self.fps}) "
+                f"is not divisible by WORK_MEMORY_SAMPLE_RATE={self.work_memory_sample_rate}."
+            )
+
+        self.cfg_default_opts = [
+            "DATA.FPS", str(self.fps),
+            "MODEL.LSTR.LONG_MEMORY_SECONDS", str(self.long_memory_seconds),
+            "MODEL.LSTR.LONG_MEMORY_SAMPLE_RATE", str(self.long_memory_sample_rate),
+            "MODEL.LSTR.WORK_MEMORY_SECONDS", str(self.work_memory_seconds),
+            "MODEL.LSTR.WORK_MEMORY_SAMPLE_RATE", str(self.work_memory_sample_rate),
+        ]
+
+    def recommend_dataset_window(self) -> dict[str, int] | None:
+        fps = max(1, self.fps)
+        long_sr = max(1, self.long_memory_sample_rate)
+        long_steps = max(1, int(round((self.long_memory_seconds * fps) / long_sr)))
+        # Keep full work horizon in frame units for targets.
+        work_steps = max(1, int(round(self.work_memory_seconds * fps)))
+        stride = max(1, work_steps // 2)
+        return {"dataset_long": long_steps, "dataset_work": work_steps, "dataset_stride": stride}
 
 class CMeRTAdapter(LSTRAdapter):
     name = "CMeRT"

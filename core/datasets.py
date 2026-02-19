@@ -118,8 +118,8 @@ class PreExtractedDataset(data.Dataset):
         # Windowing map preparation
         T = long + work
         self.samples = []
-        ignored_clips = 0
-        ignored_frames = 0
+        self.ignored_clips = 0
+        self.ignored_frames = 0
         for vid, meta in {k: metadata_vid[k] for k in self.sessions if k in metadata_vid}.items():
             session_x_pth = Path(self.sessions_dir, 'rgb', f'{vid}.npy')
             session_y_pth = Path(self.sessions_dir, 'target_perframe', f'{vid}.npy')
@@ -127,15 +127,15 @@ class PreExtractedDataset(data.Dataset):
             has_ann_file = bool(session_a_pth is not None and session_a_pth.exists())
             N = meta['num_steps']
             if N < T:
-                ignored_clips = ignored_clips + 1
-                ignored_frames = ignored_frames + N
+                self.ignored_clips = self.ignored_clips + 1
+                self.ignored_frames = self.ignored_frames + N
                 continue
 
             for start in range(0, N - T + 1, stride):
                 self.samples.append((session_x_pth, session_y_pth, session_a_pth, has_ann_file, start))
 
-        if ignored_clips != 0:
-            warnings.warn(f'Ignored {ignored_clips} clip(s) containing {ignored_frames} frames.', RuntimeWarning)
+        if self.ignored_clips != 0:
+            warnings.warn(f'Ignored {self.ignored_clips} clip(s) containing {self.ignored_frames} frames.', RuntimeWarning)
 
     @staticmethod
     def _is_synthetic_class_names(names: dict[int, str]) -> bool:
